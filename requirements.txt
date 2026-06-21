@@ -1,0 +1,6 @@
+aiogram==3.*
+httpx==0.*
+python-dotenv==1.*
+pydantic==2.*
+
+aiohttp_socks==0.*
