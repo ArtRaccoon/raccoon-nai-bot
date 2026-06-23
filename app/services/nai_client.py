@@ -1,11 +1,15 @@
 import base64
 import io
+import logging
 import zipfile
 from typing import Optional
 
 import httpx
 
 from config_defaults import MODELS, UC_PRESETS, UserSettings
+
+log = logging.getLogger(__name__)
+SAFE_DEFAULT_MODEL = "nai-diffusion-4-5-full"
 
 class NovelAIError(RuntimeError):
     pass
@@ -52,7 +56,7 @@ class NovelAIClient:
         image_b64: Optional[str] = None,
         mask_b64: Optional[str] = None,
     ) -> dict:
-        model = self.default_model or MODELS.get(settings.model_name, "nai-diffusion-4-5-full")
+        model = self.default_model or MODELS.get(settings.model_name) or SAFE_DEFAULT_MODEL
         uc = UC_PRESETS.get(settings.uc_preset, "")
         if settings.negative_prompt.strip():
             uc = (uc + ", " + settings.negative_prompt.strip()).strip(", ")
@@ -75,8 +79,9 @@ class NovelAIClient:
             "cfg_rescale": settings.cfg_rescale,
             "noise_schedule": settings.noise_schedule,
             "negative_prompt": uc,
-            "seed": None if settings.seed == -1 else settings.seed,
         }
+        if settings.seed != -1:
+            parameters["seed"] = settings.seed
 
         action = "generate"
         if image_b64:
@@ -123,7 +128,9 @@ class NovelAIClient:
             )
 
         if r.status_code >= 400:
-            raise NovelAIError(self._friendly_api_error(r))
+            error_text = self._friendly_api_error(r)
+            log.warning("NovelAI image API error: %s", self._safe_response_diagnostics(r))
+            raise NovelAIError(error_text)
 
         content_type = r.headers.get("content-type", "")
         data = r.content
@@ -147,6 +154,18 @@ class NovelAIClient:
         return images
 
 
+    def _safe_response_diagnostics(self, response: httpx.Response) -> str:
+        content_type = response.headers.get("content-type", "unknown") or "unknown"
+        body = response.text.replace("\r", " ").replace("\n", " ")[:500]
+        if not body:
+            body = "<empty>"
+        return (
+            f"status={response.status_code}; "
+            f"content-type={content_type}; "
+            f"body={body}"
+        )
+
+
     def _friendly_api_error(self, response: httpx.Response) -> str:
         messages = {
             400: "Некорректный запрос к NovelAI. Проверьте промт и настройки генерации.",
@@ -159,6 +178,8 @@ class NovelAIClient:
             503: "NovelAI временно недоступен. Попробуйте позже.",
             504: "NovelAI не ответил вовремя. Попробуйте позже.",
         }
+        diagnostics = self._safe_response_diagnostics(response)
+        hint = " Это безопасная диагностика без токена: " + diagnostics
         if response.status_code in messages:
-            return messages[response.status_code]
-        return f"NovelAI API вернул ошибку {response.status_code}. Попробуйте позже."
+            return messages[response.status_code] + hint
+        return f"NovelAI API вернул ошибку {response.status_code}. Попробуйте позже." + hint

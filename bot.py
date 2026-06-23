@@ -22,7 +22,7 @@ from storage import get_settings, save_settings, patch_settings
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-NOVELAI_TOKEN = os.getenv("NOVELAI_TOKEN", "")
+NOVELAI_TOKEN = (os.getenv("NOVELAI_TOKEN") or os.getenv("NAI_TOKEN") or "").strip()
 NAI_MODEL = os.getenv("NAI_MODEL", "").strip()
 PROXY_URL = os.getenv("PROXY_URL", "socks5://127.0.0.1:1080").strip()
 ADMIN_IDS = [
