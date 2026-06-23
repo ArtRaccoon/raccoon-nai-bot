@@ -6,3 +6,5 @@ pydantic==2.*
 aiohttp_socks==0.*
 
 socksio==1.*
+fastapi
+uvicorn
