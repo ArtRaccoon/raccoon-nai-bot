@@ -13,7 +13,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, FSInputFile
 from aiogram.client.session.aiohttp import AiohttpSession
 from dotenv import load_dotenv
 
@@ -59,6 +59,9 @@ class GenState(StatesGroup):
 
 TMP_DIR = Path("data/tmp_images")
 TMP_DIR.mkdir(parents=True, exist_ok=True)
+GENERATED_DIR = Path("data/generated")
+GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+# TODO: add safe generated-image cleanup by age and total storage size when retention policy is defined.
 
 def main_menu():
     return base_main_menu(CHANNEL_URL)
@@ -174,6 +177,39 @@ def parse_nai_metadata(data: bytes) -> dict:
             if m:
                 meta[target] = m.group(1)
     return meta
+
+def _safe_generated_image_path(user_id: int, timestamp: str, idx: int) -> Path:
+    safe_timestamp = re.sub(r"[^0-9A-Za-z_.-]+", "_", timestamp)
+    filename = f"{int(user_id)}_{safe_timestamp}_{int(idx)}.png"
+    path = GENERATED_DIR / filename
+    resolved_dir = GENERATED_DIR.resolve()
+    resolved_path = path.resolve()
+    if resolved_dir not in resolved_path.parents:
+        raise ValueError("Unsafe generated image path")
+    return path
+
+def _save_generated_images(user_id: int, timestamp: str, images: list[bytes]) -> list[dict]:
+    saved = []
+    for idx, img in enumerate(images, start=1):
+        path = _safe_generated_image_path(user_id, timestamp, idx)
+        path.write_bytes(img)
+        saved.append({"path": path.as_posix(), "filename": f"novelai_{idx}.png", "index": idx})
+    return saved
+
+def _safe_existing_generated_path(raw_path: str) -> Path | None:
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+    try:
+        resolved_path = path.resolve()
+        resolved_dir = GENERATED_DIR.resolve()
+    except OSError:
+        return None
+    if resolved_dir not in resolved_path.parents:
+        return None
+    return path if path.exists() and path.is_file() else None
 
 def metadata_summary(meta: dict) -> str:
     if not meta:
@@ -763,6 +799,8 @@ async def generate_image_from_prompt(
                 ),
                 timeout=GENERATION_TIMEOUT_SECONDS,
             )
+        timestamp = datetime.now(timezone.utc).isoformat()
+        saved_images = _save_generated_images(user_id, timestamp, images)
         history_item = {
             "prompt": prompt,
             "original_prompt": original_prompt,
@@ -771,8 +809,9 @@ async def generate_image_from_prompt(
             "seed": s.seed,
             "model": s.model_name,
             "size": f"{s.width}x{s.height}",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": timestamp,
             "image": {"count": len(images), "format": "png"} if images else {},
+            "images": saved_images,
         }
         add_history(user_id, history_item)
         set_last_metadata(user_id, history_item)
@@ -1203,6 +1242,45 @@ def _item_prompt_text(item: dict) -> str:
         f"<blockquote expandable>{html.escape(str(item.get('negative_prompt') or '—'))}</blockquote>"
     )
 
+def _item_caption(item: dict, number: int) -> str:
+    return (
+        f"#{number}\n"
+        f"🕒 <code>{html.escape(_format_timestamp(str(item.get('timestamp', ''))))}</code>\n"
+        f"🎲 Seed: <code>{html.escape(str(item.get('seed', '—')))}</code>\n"
+        f"📐 Size: <code>{html.escape(str(item.get('size', '—')))}</code>\n"
+        f"🧠 Model: <code>{html.escape(str(item.get('model', '—')))}</code>"
+    )
+
+def _first_item_image_path(item: dict) -> Path | None:
+    images = item.get("images")
+    if not isinstance(images, list):
+        return None
+    for image in images:
+        if isinstance(image, dict):
+            path = _safe_existing_generated_path(str(image.get("path") or ""))
+            if path:
+                return path
+    return None
+
+async def _send_collection_preview(message: types.Message, kind: str, items: list[dict]) -> None:
+    if not items:
+        return
+    item = items[0]
+    image_path = _first_item_image_path(item)
+    if image_path:
+        await message.answer_photo(
+            FSInputFile(image_path),
+            caption=_item_caption(item, 1),
+            parse_mode="HTML",
+            reply_markup=generation_item_menu(kind, 0),
+        )
+    else:
+        await message.answer(
+            "Изображение не найдено на диске, показываю только данные.\n\n" + _item_caption(item, 1),
+            parse_mode="HTML",
+            reply_markup=generation_item_menu(kind, 0),
+        )
+
 def _history_keyboard(kind: str, items: list[dict]):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     buttons = []
@@ -1243,6 +1321,7 @@ async def history_cmd(message: types.Message):
         parse_mode="HTML",
         reply_markup=_history_keyboard("history", items) if items else main_menu(),
     )
+    await _send_collection_preview(message, "history", items)
 
 @dp.message(Command("favorites"))
 async def favorites_cmd(message: types.Message):
@@ -1252,17 +1331,20 @@ async def favorites_cmd(message: types.Message):
         parse_mode="HTML",
         reply_markup=_history_keyboard("fav", items) if items else main_menu(),
     )
+    await _send_collection_preview(message, "fav", items)
 
 @dp.callback_query(F.data == "menu:history")
 async def cb_history(call: types.CallbackQuery):
     items = get_history(call.from_user.id)
     await call.message.edit_text(_history_lines(items, "🕘 <b>История генераций</b>", "История пока пустая. Сгенерируй картинку — и я сохраню её здесь 🦝"), parse_mode="HTML", reply_markup=_history_keyboard("history", items) if items else main_menu())
+    await _send_collection_preview(call.message, "history", items)
     await call.answer()
 
 @dp.callback_query(F.data == "menu:favorites")
 async def cb_favorites(call: types.CallbackQuery):
     items = get_favorites(call.from_user.id)
     await call.message.edit_text(_history_lines(items, "⭐ <b>Избранное</b>", "В избранном пока пусто. Нажми ⭐ после удачной генерации — и она появится здесь."), parse_mode="HTML", reply_markup=_history_keyboard("fav", items) if items else main_menu())
+    await _send_collection_preview(call.message, "fav", items)
     await call.answer()
 
 @dp.callback_query(F.data == "favorite:last")
