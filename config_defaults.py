@@ -29,30 +29,52 @@ RESOLUTIONS = {
     "Small 512x768": (512, 768),
 }
 
+AELITA_DESCRIPTION = (
+    "raccoon girl, long black hair, pink eyes with vertical pupils, raccoon ears, "
+    "striped raccoon tail, pale skin, constellation tattoo, oversized dark hoodie with purple accents, "
+    "fingerless gloves"
+)
+
 QUICK_PRESETS = {
     "aelita": {
-        "title": "Аэлита",
-        "prompt": "Aelita, elegant retro-futuristic princess from Mars, silver crown, red desert palace, art nouveau, cinematic light",
+        "title": "🦝 Аэлита",
+        "prompt": f"{AELITA_DESCRIPTION}, character portrait, expressive anime illustration, soft violet rim light, urban night ambience, detailed fabric folds",
     },
-    "anime_portrait": {
-        "title": "Anime portrait",
-        "prompt": "anime portrait, expressive eyes, soft rim light, detailed hair, clean lineart, beautiful face, simple background",
+    "semi_realistic_anime": {
+        "title": "🎨 Semi-realistic anime",
+        "prompt": "semi-realistic anime style, refined facial anatomy, painterly skin shading, detailed hair strands, cinematic portrait lighting, depth of field, polished character illustration",
     },
-    "fantasy_tarot": {
-        "title": "Fantasy tarot",
-        "prompt": "fantasy tarot card, ornate golden frame, mystical character, symbolic details, glowing magic, highly detailed illustration",
+    "arcane_fortiche": {
+        "title": "🎬 Arcane / Fortiche",
+        "prompt": "Fortiche-inspired painterly animation style, stylized 3d character look, bold brush texture, dramatic colored rim light, expressive face, cinematic composition, rich shadow shapes",
     },
-    "watercolor_raccoon": {
-        "title": "Watercolor raccoon",
-        "prompt": "cute raccoon, watercolor illustration, soft paper texture, gentle colors, cozy forest, whimsical mood",
+    "ghibli_watercolor": {
+        "title": "🌿 Ghibli watercolor",
+        "prompt": "gentle Japanese animation background style, transparent watercolor wash, lush greenery, soft hand-painted clouds, warm nostalgic light, whimsical environmental details",
     },
-    "manga_action": {
-        "title": "Manga action",
-        "prompt": "manga action scene, dynamic pose, speed lines, dramatic perspective, impact frame, black and white ink",
+    "manga_illustration": {
+        "title": "🖋 Manga illustration",
+        "prompt": "manga illustration, crisp black ink lineart, screentone shading, dynamic panel composition, expressive pose, speed lines, high contrast monochrome rendering",
     },
-    "arcane_style": {
-        "title": "Arcane style",
-        "prompt": "stylized fantasy character portrait, painterly animation look, dramatic lighting, ornate details, rich colors",
+    "dark_fantasy_painting": {
+        "title": "🕯 Dark fantasy painting",
+        "prompt": "dark fantasy oil painting, chiaroscuro lighting, gothic atmosphere, weathered stone, candlelit mist, ornate armor details, dramatic painterly brushwork",
+    },
+    "sci_fantasy_macro": {
+        "title": "🔬 Sci-fantasy macro",
+        "prompt": "sci-fantasy macro photography look, bioluminescent crystal flora, tiny intricate mechanisms, shallow depth of field, iridescent particles, ultra close-up composition",
+    },
+    "vintage_storybook": {
+        "title": "📖 Vintage storybook",
+        "prompt": "vintage storybook illustration, muted ink and gouache, aged paper texture, decorative border, cozy fairytale scene, hand-drawn hatching, nostalgic print colors",
+    },
+    "art_nouveau": {
+        "title": "🧵 Art nouveau",
+        "prompt": "art nouveau illustration, flowing ornamental lines, botanical motifs, elegant poster composition, stained glass color palette, decorative frame, Alphonse Mucha inspired silhouette",
+    },
+    "painterly_illustration": {
+        "title": "🖼 Painterly illustration",
+        "prompt": "painterly illustration, visible brush strokes, cohesive color script, atmospheric perspective, soft edge control, warm key light, detailed focal point, concept art finish",
     },
 }
 

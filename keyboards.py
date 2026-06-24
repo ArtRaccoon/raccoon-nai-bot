@@ -45,12 +45,23 @@ def pending_prompt_menu(has_image: bool = False, pro: bool = False, compact: boo
             InlineKeyboardButton(text="🧹 Почистить", callback_data="tool:clean"),
             InlineKeyboardButton(text="📝 Показать исходник", callback_data="prompt:show_original"),
             InlineKeyboardButton(text="🦝 ArtRaccoon vibe", callback_data="tool:raccoon"),
-            InlineKeyboardButton(text="👧 Добавить Аэлиту", callback_data="tool:aelita"),
+            InlineKeyboardButton(text="🦝 Добавить Аэлиту", callback_data="tool:aelita"),
             InlineKeyboardButton(text="📎 Img2Img" + (" ✅" if has_image else ""), callback_data="menu:img2img"),
         ])
     if not pro:
         buttons.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"))
     buttons.append(InlineKeyboardButton(text="❌ Отмена", callback_data="prompt:cancel"))
+    return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
+
+def generation_item_menu(kind: str, index: int) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(text="🔁 Повторить", callback_data=f"{kind}:retry:{index}"),
+        InlineKeyboardButton(text="📝 Показать промт", callback_data=f"{kind}:prompt:{index}"),
+    ]
+    if kind == "history":
+        buttons.insert(1, InlineKeyboardButton(text="⭐ В избранное", callback_data=f"history:fav:{index}"))
+    if kind == "fav":
+        buttons.insert(1, InlineKeyboardButton(text="🗑 Удалить", callback_data=f"fav:del:{index}"))
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
 def after_generation_menu() -> InlineKeyboardMarkup:
