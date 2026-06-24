@@ -17,16 +17,16 @@ from aiogram.types import BufferedInputFile
 from aiogram.client.session.aiohttp import AiohttpSession
 from dotenv import load_dotenv
 
-from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRESETS, NOISE_SCHEDULES, UserSettings
+from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRESETS, NOISE_SCHEDULES, UserSettings, AELITA_DESCRIPTION
 from keyboards import (
     main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
-    after_generation_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu
+    after_generation_menu, generation_item_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu
 )
 from app.services.nai_client import NovelAIClient, NovelAIError
 from prompt_tools import natural_to_nai_tags, looks_like_english_tags
 from storage import (
     get_settings, save_settings, patch_settings, add_history, get_history,
-    add_favorite, get_favorites, set_last_metadata, get_last_metadata
+    add_favorite, get_favorites, delete_favorite, set_last_metadata, get_last_metadata
 )
 
 load_dotenv()
@@ -315,14 +315,27 @@ def user_label(user: types.User) -> str:
         parts.append(name)
     return " / ".join(parts)
 
+def _blockquote(text: str, limit: int = 3500) -> str:
+    safe = html.escape((text or "—")[:limit])
+    expandable = " expandable" if len(text or "") > 900 else ""
+    return f"<blockquote{expandable}>{safe}</blockquote>"
+
 def moderation_summary(user: types.User, original_prompt: str, final_prompt: str, s) -> str:
+    settings = (
+        f"model={html.escape(s.model_name)}, size={s.width}x{s.height}, "
+        f"steps={s.steps}, cfg={s.scale}, seed={'random' if s.seed == -1 else s.seed}, "
+        f"sampler={html.escape(s.sampler)}, n={s.n_samples}"
+    )
     return (
         "🛡 <b>Модерация генерации</b>\n"
-        f"<b>Пользователь:</b> <code>{html.escape(user_label(user))}</code>\n\n"
-        f"<b>Исходный промт:</b>\n<code>{html.escape((original_prompt or final_prompt)[:1200])}</code>\n\n"
-        f"<b>Промт в NovelAI:</b>\n<code>{html.escape(final_prompt[:1200])}</code>\n\n"
-        f"<b>Негатив:</b>\n<code>{html.escape((s.negative_prompt or '—')[:1000])}</code>\n\n"
-        f"{generation_settings_summary(s)}"
+        f"👤 <b>User:</b> <code>{html.escape(user_label(user))}</code>\n"
+        f"⚙️ <b>Settings:</b> <code>{settings}</code>\n\n"
+        "📝 <b>Original prompt</b>\n"
+        f"{_blockquote(original_prompt or final_prompt)}\n"
+        "🎯 <b>Final prompt</b>\n"
+        f"{_blockquote(final_prompt)}\n"
+        "🚫 <b>Negative prompt</b>\n"
+        f"{_blockquote(s.negative_prompt or '—', 1800)}"
     )
 
 async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: str, final_prompt: str, s) -> None:
@@ -333,12 +346,12 @@ async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: 
         try:
             await bot_obj.send_message(admin_id, text, parse_mode="HTML")
         except Exception:
-            log.exception("Failed to send moderation copy to admin %s", admin_id)
+            log.exception("Failed to send moderation prompt summary to admin %s", admin_id)
 
 async def send_moderation_image(bot_obj: Bot, user: types.User, img: bytes, original_prompt: str, final_prompt: str, s, idx: int) -> None:
     if user.id in ADMIN_IDS:
         return
-    caption = moderation_summary(user, original_prompt, final_prompt, s)[:1000]
+    caption = f"🛡 <b>Готовое изображение</b>\n👤 <code>{html.escape(user_label(user))}</code>\n📐 <code>{s.width}x{s.height}</code> · 🎲 <code>{'random' if s.seed == -1 else s.seed}</code>"
     for admin_id in ADMIN_IDS:
         try:
             await bot_obj.send_photo(
@@ -348,7 +361,7 @@ async def send_moderation_image(bot_obj: Bot, user: types.User, img: bytes, orig
                 parse_mode="HTML",
             )
         except Exception:
-            log.exception("Failed to send moderation image to admin %s", admin_id)
+            log.exception("Failed to send generated image copy to admin %s for user %s image %s", admin_id, user.id, idx)
 
 async def show_pending_prompt(message: types.Message, user_id: int) -> None:
     s = get_settings(user_id)
@@ -717,9 +730,6 @@ async def generate_image_from_prompt(
     except Exception:
         final_prompt = prompt
 
-    if actor is None:
-        await notify_admins_about_prompt(message, prompt)
-
     global generation_waiting
     if generation_lock.locked() or generation_waiting:
         await message.answer(f"⏳ Генерация поставлена в очередь. Перед тобой: {generation_waiting}")
@@ -753,14 +763,26 @@ async def generate_image_from_prompt(
                 ),
                 timeout=GENERATION_TIMEOUT_SECONDS,
             )
-        add_history(user_id, {"prompt": prompt, "seed": s.seed, "model": s.model_name, "size": f"{s.width}x{s.height}", "timestamp": datetime.now(timezone.utc).isoformat()})
+        history_item = {
+            "prompt": prompt,
+            "original_prompt": original_prompt,
+            "final_prompt": final_prompt,
+            "negative_prompt": s.negative_prompt,
+            "seed": s.seed,
+            "model": s.model_name,
+            "size": f"{s.width}x{s.height}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "image": {"count": len(images), "format": "png"} if images else {},
+        }
+        add_history(user_id, history_item)
+        set_last_metadata(user_id, history_item)
         patch_settings(user_id, pending_image_path="")
         await wait.delete()
 
         for idx, img in enumerate(images, start=1):
             name = f"novelai_{idx}.png"
             image = BufferedInputFile(img, filename=name)
-            caption = f"✅ <b>Готово</b>\\n<code>{html.escape(prompt[:900])}</code>"
+            caption = f"✅ <b>Готово</b>\\nSeed: <code>{s.seed}</code>\\nРазмер: <code>{s.width}x{s.height}</code>"
             try:
                 await send_moderation_image(message.bot, user, img, original_prompt, final_prompt, s, idx)
                 await message.answer_photo(
@@ -1127,31 +1149,73 @@ async def cb_modes(call: types.CallbackQuery):
 
 
 
-def _history_lines(items: list[dict], title: str) -> str:
+def _format_timestamp(value: str) -> str:
+    if not value:
+        return "—"
+    try:
+        return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M UTC")
+    except ValueError:
+        return value[:19]
+
+def _item_prompt(item: dict) -> str:
+    return str(item.get("final_prompt") or item.get("prompt") or "")
+
+def _history_lines(items: list[dict], title: str, empty_text: str) -> str:
     if not items:
-        return f"{title}\n\nПока пусто. Сгенерируй картинку и возвращайся сюда 🦝"
+        return f"{title}\n\n{empty_text}"
     lines = [title, ""]
     for i, item in enumerate(items[:10], start=1):
-        prompt = html.escape(str(item.get("prompt", ""))[:180])
+        prompt = html.escape(_item_prompt(item)[:160] or "—")
         lines.append(
             f"{i}. <code>{prompt}</code>\n"
             f"   🎲 <code>{item.get('seed', '—')}</code> · "
             f"🧠 <code>{html.escape(str(item.get('model', '—')))}</code> · "
-            f"📐 <code>{item.get('size', '—')}</code>"
+            f"📐 <code>{item.get('size', '—')}</code> · "
+            f"🕒 <code>{html.escape(_format_timestamp(str(item.get('timestamp', ''))))}</code>"
         )
     return "\n".join(lines)
 
 def _last_generation_item(user_id: int) -> dict | None:
+    meta = get_last_metadata(user_id)
+    if meta.get("prompt") or meta.get("final_prompt"):
+        return dict(meta)
     s = get_settings(user_id)
     if not s.last_prompt:
         return None
     return {
         "prompt": s.last_prompt,
+        "original_prompt": s.last_prompt,
+        "final_prompt": s.last_prompt,
+        "negative_prompt": s.negative_prompt,
         "seed": s.seed,
         "model": s.model_name,
         "size": f"{s.width}x{s.height}",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+def _item_prompt_text(item: dict) -> str:
+    return (
+        "📝 <b>Промт</b>\n"
+        f"<blockquote expandable>{html.escape(str(item.get('prompt') or '—'))}</blockquote>\n"
+        "🎯 <b>Final prompt</b>\n"
+        f"<blockquote expandable>{html.escape(str(item.get('final_prompt') or item.get('prompt') or '—'))}</blockquote>\n"
+        "🚫 <b>Negative prompt</b>\n"
+        f"<blockquote expandable>{html.escape(str(item.get('negative_prompt') or '—'))}</blockquote>"
+    )
+
+def _history_keyboard(kind: str, items: list[dict]):
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    buttons = []
+    for i, item in enumerate(items[:10], start=1):
+        buttons.append(InlineKeyboardButton(text=f"{i}. 🔁", callback_data=f"{kind}:retry:{i-1}"))
+        if kind == "history":
+            buttons.append(InlineKeyboardButton(text=f"{i}. ⭐", callback_data=f"history:fav:{i-1}"))
+        else:
+            buttons.append(InlineKeyboardButton(text=f"{i}. 🗑", callback_data=f"fav:del:{i-1}"))
+        buttons.append(InlineKeyboardButton(text=f"{i}. 📝", callback_data=f"{kind}:prompt:{i-1}"))
+    buttons.append(InlineKeyboardButton(text="⬅️ Меню", callback_data="menu:main"))
+    return InlineKeyboardMarkup(inline_keyboard=[buttons[i:i+3] for i in range(0, len(buttons), 3)])
+
 
 def transform_prompt(prompt: str, tool: str) -> str:
     p = " ".join(prompt.replace("\n", ", ").split())
@@ -1164,28 +1228,41 @@ def transform_prompt(prompt: str, tool: str) -> str:
     if tool == "translate":
         return natural_to_nai_tags(prompt)
     additions = {
-        "improve": "best composition, expressive lighting, detailed background, cohesive color palette, sharp focus",
+        "improve": "strong composition, expressive lighting, detailed background, cohesive color palette, sharp focus",
         "raccoon": "ArtRaccoon vibe, cozy mischievous raccoon energy, warm cinematic light, whimsical details",
-        "aelita": "Aelita, elegant retro-futuristic princess from Mars, silver crown, red desert palace",
+        "aelita": AELITA_DESCRIPTION,
     }
-    return f"{p}, {additions.get(tool, '')}".strip(", ")
+    addition = additions.get(tool, "")
+    return f"{p}, {addition}".strip(", ")
 
 @dp.message(Command("history"))
 async def history_cmd(message: types.Message):
-    await message.answer(_history_lines(get_history(message.from_user.id), "🕘 <b>История генераций</b>"), parse_mode="HTML", reply_markup=main_menu())
+    items = get_history(message.from_user.id)
+    await message.answer(
+        _history_lines(items, "🕘 <b>История генераций</b>", "История пока пустая. Сгенерируй картинку — и я сохраню её здесь 🦝"),
+        parse_mode="HTML",
+        reply_markup=_history_keyboard("history", items) if items else main_menu(),
+    )
 
 @dp.message(Command("favorites"))
 async def favorites_cmd(message: types.Message):
-    await message.answer(_history_lines(get_favorites(message.from_user.id), "⭐ <b>Избранное</b>"), parse_mode="HTML", reply_markup=main_menu())
+    items = get_favorites(message.from_user.id)
+    await message.answer(
+        _history_lines(items, "⭐ <b>Избранное</b>", "В избранном пока пусто. Нажми ⭐ после удачной генерации — и она появится здесь."),
+        parse_mode="HTML",
+        reply_markup=_history_keyboard("fav", items) if items else main_menu(),
+    )
 
 @dp.callback_query(F.data == "menu:history")
 async def cb_history(call: types.CallbackQuery):
-    await call.message.edit_text(_history_lines(get_history(call.from_user.id), "🕘 <b>История генераций</b>"), parse_mode="HTML", reply_markup=main_menu())
+    items = get_history(call.from_user.id)
+    await call.message.edit_text(_history_lines(items, "🕘 <b>История генераций</b>", "История пока пустая. Сгенерируй картинку — и я сохраню её здесь 🦝"), parse_mode="HTML", reply_markup=_history_keyboard("history", items) if items else main_menu())
     await call.answer()
 
 @dp.callback_query(F.data == "menu:favorites")
 async def cb_favorites(call: types.CallbackQuery):
-    await call.message.edit_text(_history_lines(get_favorites(call.from_user.id), "⭐ <b>Избранное</b>"), parse_mode="HTML", reply_markup=main_menu())
+    items = get_favorites(call.from_user.id)
+    await call.message.edit_text(_history_lines(items, "⭐ <b>Избранное</b>", "В избранном пока пусто. Нажми ⭐ после удачной генерации — и она появится здесь."), parse_mode="HTML", reply_markup=_history_keyboard("fav", items) if items else main_menu())
     await call.answer()
 
 @dp.callback_query(F.data == "favorite:last")
@@ -1196,6 +1273,30 @@ async def cb_favorite_last(call: types.CallbackQuery):
         return
     add_favorite(call.from_user.id, item)
     await call.answer("Добавлено в избранное ⭐")
+
+@dp.callback_query(F.data.regexp(r"^(history|fav):(retry|prompt|fav|del):\d+$"))
+async def cb_history_favorite_action(call: types.CallbackQuery):
+    kind, action, raw_index = call.data.split(":")
+    index = int(raw_index)
+    items = get_history(call.from_user.id) if kind == "history" else get_favorites(call.from_user.id)
+    if index >= len(items):
+        await call.answer("Запись не найдена", show_alert=True)
+        return
+    item = items[index]
+    if action == "retry":
+        await call.answer("Повторяю")
+        await generate_image_from_prompt(call.message, str(item.get("prompt") or item.get("final_prompt") or ""), actor=call.from_user)
+    elif action == "prompt":
+        await call.message.answer(_item_prompt_text(item), parse_mode="HTML")
+        await call.answer("Показываю промт")
+    elif action == "fav" and kind == "history":
+        add_favorite(call.from_user.id, item)
+        await call.answer("Добавлено в избранное ⭐")
+    elif action == "del" and kind == "fav":
+        delete_favorite(call.from_user.id, index)
+        await call.answer("Удалено")
+        items = get_favorites(call.from_user.id)
+        await call.message.edit_text(_history_lines(items, "⭐ <b>Избранное</b>", "В избранном пока пусто. Нажми ⭐ после удачной генерации — и она появится здесь."), parse_mode="HTML", reply_markup=_history_keyboard("fav", items) if items else main_menu())
 
 @dp.callback_query(F.data.in_({"menu:inpaint", "menu:reference", "menu:upscale"}))
 async def cb_placeholders(call: types.CallbackQuery):

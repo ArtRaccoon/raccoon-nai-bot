@@ -70,6 +70,16 @@ def get_favorites(user_id: int) -> list[dict]:
     data = load_all()
     return list(data.get(str(user_id), {}).get("favorites", []))
 
+def delete_favorite(user_id: int, index: int) -> bool:
+    data = load_all()
+    user = data.get(str(user_id), {})
+    favorites = user.get("favorites", [])
+    if not isinstance(favorites, list) or index < 0 or index >= len(favorites):
+        return False
+    del favorites[index]
+    save_all(data)
+    return True
+
 
 def set_last_metadata(user_id: int, metadata: dict) -> None:
     data = load_all()
