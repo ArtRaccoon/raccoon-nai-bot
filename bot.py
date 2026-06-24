@@ -14,8 +14,8 @@ from dotenv import load_dotenv
 
 from config_defaults import QUICK_PRESETS, RESOLUTIONS
 from keyboards import (
-    main_menu, settings_menu, model_menu, size_menu, sampler_menu,
-    uc_menu, numeric_menu, modes_menu, presets_menu
+    main_menu as base_main_menu, settings_menu, model_menu, size_menu, sampler_menu,
+    uc_menu, numeric_menu, modes_menu, presets_menu, pending_prompt_menu
 )
 from app.services.nai_client import NovelAIClient, NovelAIError
 from storage import get_settings, save_settings, patch_settings
@@ -26,6 +26,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 NOVELAI_TOKEN = (os.getenv("NOVELAI_TOKEN") or os.getenv("NAI_TOKEN") or "").strip()
 NAI_MODEL = os.getenv("NAI_MODEL", "").strip()
 PROXY_URL = os.getenv("PROXY_URL", "socks5://127.0.0.1:1080").strip()
+CHANNEL_URL = os.getenv("CHANNEL_URL", "").strip()
+
 ADMIN_IDS = [
     int(x.strip())
     for x in os.getenv("ADMIN_IDS", "").split(",")
@@ -41,6 +43,26 @@ nai = NovelAIClient(NOVELAI_TOKEN, default_model=NAI_MODEL, proxy_url=PROXY_URL)
 
 class GenState(StatesGroup):
     waiting_prompt = State()
+
+def main_menu():
+    return base_main_menu(CHANNEL_URL)
+
+def prompt_preview_text(prompt: str) -> str:
+    return (
+        "📝 <b>Промт готов. Запускаем?</b>\n\n"
+        f"<code>{html.escape(prompt[:3000])}</code>"
+    )
+
+async def show_pending_prompt(message: types.Message, user_id: int) -> None:
+    s = get_settings(user_id)
+    if not s.pending_prompt:
+        await message.answer("📝 Черновик пуст. Пришли новый промт обычным сообщением.", reply_markup=main_menu())
+        return
+    await message.answer(
+        prompt_preview_text(s.pending_prompt),
+        parse_mode="HTML",
+        reply_markup=pending_prompt_menu(),
+    )
 
 def settings_text(user_id: int) -> str:
     s = get_settings(user_id)
@@ -139,7 +161,7 @@ async def help_cmd(message: types.Message):
         "/raw — показать настройки\n"
         "/nai_debug — показать модель и параметры NovelAI\n"
         "/cancel — отменить ввод промта\n\n"
-        "Можно не писать /gen: нажми кнопку 🎨 Генерация и отправь промт обычным сообщением.\n"
+        "Можно не писать /gen: отправь обычный текст, я покажу черновик и кнопки подтверждения.\n"
         "Для img2img: отправь картинку, потом ответь на неё командой /gen prompt."
     )
 
@@ -409,15 +431,14 @@ async def cb_preset_show(call: types.CallbackQuery):
         await call.answer("Пресет не найден", show_alert=True)
         return
     prompt = preset["prompt"]
-    patch_settings(call.from_user.id, last_prompt=prompt)
+    patch_settings(call.from_user.id, pending_prompt=prompt, prompt_action="")
     await call.message.edit_text(
-        f"✍️ <b>{preset['title']}</b>\n\n"
-        f"<code>{html.escape(prompt)}</code>\n\n"
-        "Скопируй промт, допиши детали и отправь через /gen — или нажми ▶️ в меню пресетов.",
-        reply_markup=presets_menu(),
+        f"✍️ <b>{preset['title']}</b> — сохранила как черновик.\n\n"
+        + prompt_preview_text(prompt),
+        reply_markup=pending_prompt_menu(),
         parse_mode="HTML",
     )
-    await call.answer("Промт показан")
+    await call.answer("Промт готов")
 
 @dp.callback_query(F.data.startswith("preset:gen:"))
 async def cb_preset_gen(call: types.CallbackQuery):
@@ -439,6 +460,41 @@ async def cb_last_prompt(call: types.CallbackQuery):
 async def cb_retry(call: types.CallbackQuery):
     await call.answer("Повторяю")
     await retry_last_prompt(call.message, actor=call.from_user)
+
+
+@dp.callback_query(F.data == "prompt:confirm")
+async def cb_prompt_confirm(call: types.CallbackQuery):
+    s = get_settings(call.from_user.id)
+    prompt = s.pending_prompt.strip()
+    if not prompt:
+        await call.answer("Черновик пуст", show_alert=True)
+        await call.message.answer("📝 Черновик пуст. Пришли новый промт обычным сообщением.", reply_markup=main_menu())
+        return
+    patch_settings(call.from_user.id, pending_prompt="", prompt_action="")
+    await call.answer("Запускаю генерацию")
+    await call.message.answer("✅ Отлично, запускаю генерацию по черновику.")
+    await generate_image_from_prompt(call.message, prompt, actor=call.from_user)
+
+@dp.callback_query(F.data == "prompt:append")
+async def cb_prompt_append(call: types.CallbackQuery):
+    if not get_settings(call.from_user.id).pending_prompt.strip():
+        await call.answer("Сначала пришли промт", show_alert=True)
+        return
+    patch_settings(call.from_user.id, prompt_action="append")
+    await call.message.answer("✏️ Пришли текст, который нужно дописать к текущему промту. Я добавлю его в черновик.")
+    await call.answer()
+
+@dp.callback_query(F.data == "prompt:replace")
+async def cb_prompt_replace(call: types.CallbackQuery):
+    patch_settings(call.from_user.id, prompt_action="replace")
+    await call.message.answer("🔁 Хорошо, пришли новый промт — я заменю текущий черновик.")
+    await call.answer()
+
+@dp.callback_query(F.data == "prompt:cancel")
+async def cb_prompt_cancel(call: types.CallbackQuery):
+    patch_settings(call.from_user.id, pending_prompt="", prompt_action="")
+    await call.message.answer("❌ Черновик очищен. Когда будешь готов — пришли новый промт обычным сообщением.", reply_markup=main_menu())
+    await call.answer("Отменено")
 
 @dp.callback_query(F.data == "settings:model")
 async def cb_model(call: types.CallbackQuery):
@@ -503,7 +559,9 @@ async def cb_modes(call: types.CallbackQuery):
 @dp.message(Command("cancel"))
 async def cancel_cmd(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("Отменила ввод промта.", reply_markup=main_menu())
+    if message.from_user is not None:
+        patch_settings(message.from_user.id, pending_prompt="", prompt_action="")
+    await message.answer("Отменила ввод промта и очистила черновик.", reply_markup=main_menu())
 
 
 @dp.message(GenState.waiting_prompt)
@@ -515,7 +573,8 @@ async def gen_from_button(message: types.Message, state: FSMContext):
         return
 
     await state.clear()
-    await generate_image_from_prompt(message, prompt)
+    patch_settings(message.from_user.id, pending_prompt=prompt, prompt_action="")
+    await show_pending_prompt(message, message.from_user.id)
 
 
 @dp.message(Command("negative"))
@@ -609,6 +668,27 @@ async def toggle_quality(call: types.CallbackQuery):
     s = get_settings(call.from_user.id)
     await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags))
     await call.answer()
+
+@dp.message(F.text)
+async def plain_text_prompt(message: types.Message):
+    if message.from_user is None or not message.text:
+        return
+    text = message.text.strip()
+    if not text:
+        await message.answer("Пришли текстовый промт — я подготовлю черновик перед генерацией.", reply_markup=main_menu())
+        return
+
+    s = get_settings(message.from_user.id)
+    if s.prompt_action == "append" and s.pending_prompt.strip():
+        prompt = f"{s.pending_prompt.strip()}, {text}"
+        patch_settings(message.from_user.id, pending_prompt=prompt, prompt_action="")
+        await message.answer("✏️ Добавила текст к черновику.")
+    else:
+        patch_settings(message.from_user.id, pending_prompt=text, prompt_action="")
+        if s.prompt_action == "replace":
+            await message.answer("🔁 Заменила черновик новым промтом.")
+
+    await show_pending_prompt(message, message.from_user.id)
 
 async def main():
     global bot

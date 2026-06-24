@@ -4,15 +4,25 @@ from config_defaults import MODELS, RESOLUTIONS, SAMPLERS, UC_PRESETS, QUICK_PRE
 def rows(buttons, width=2):
     return [buttons[i:i+width] for i in range(0, len(buttons), width)]
 
-def main_menu() -> InlineKeyboardMarkup:
+def main_menu(channel_url: str = "") -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text="🎨 Новый промт", callback_data="menu:gen"),
-        InlineKeyboardButton(text="⚡ Быстрые пресеты", callback_data="menu:presets"),
+        InlineKeyboardButton(text="⚡ Пресеты", callback_data="menu:presets"),
         InlineKeyboardButton(text="🔁 Повторить", callback_data="quick:retry"),
-        InlineKeyboardButton(text="📝 Последний промт", callback_data="quick:last_prompt"),
-        InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"),
-        InlineKeyboardButton(text="📎 Img2Img", callback_data="menu:img2img"),
-        InlineKeyboardButton(text="❔ Помощь", callback_data="menu:help"),
+        InlineKeyboardButton(text="📝 Последний", callback_data="quick:last_prompt"),
+        InlineKeyboardButton(text="🌐 NovelAI website", url="https://novelai.net/image"),
+    ]
+    if channel_url:
+        buttons.append(InlineKeyboardButton(text="📢 Channel", url=channel_url))
+    buttons.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"))
+    return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
+
+def pending_prompt_menu() -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(text="✅ Генерировать", callback_data="prompt:confirm"),
+        InlineKeyboardButton(text="✏️ Дописать", callback_data="prompt:append"),
+        InlineKeyboardButton(text="🔁 Заменить", callback_data="prompt:replace"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="prompt:cancel"),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 

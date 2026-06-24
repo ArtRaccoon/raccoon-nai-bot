@@ -79,6 +79,10 @@ class UserSettings:
     background_mode: bool = False
     add_quality_tags: bool = True
     last_prompt: str = ""
+    pending_prompt: str = ""
+
+    # Служебный режим для текстового UX: append или replace.
+    prompt_action: str = ""
 
     # Расширенные параметры. Можно менять через код/будущее меню.
     noise_schedule: str = "karras"
