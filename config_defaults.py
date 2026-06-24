@@ -96,6 +96,9 @@ class UserSettings:
     pending_image_path: str = ""
     img2img_strength: float = 0.55
     img2img_noise: float = 0.10
+    daily_generation_count: int = 0
+    daily_generation_date: str = ""
+    last_generation_started_at: str = ""
 
     # Служебный режим для текстового UX: append или replace.
     prompt_action: str = ""
