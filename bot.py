@@ -7,7 +7,7 @@ import re
 import struct
 from io import BytesIO
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRESETS, NOISE_SCHEDULES, UserSettings
 from keyboards import (
     main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
-    after_generation_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu
+    after_generation_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu
 )
 from app.services.nai_client import NovelAIClient, NovelAIError
 from prompt_tools import natural_to_nai_tags, looks_like_english_tags
@@ -64,7 +64,12 @@ def main_menu():
     return base_main_menu(CHANNEL_URL)
 
 SAFE_RESOLUTIONS = {(512, 768), (768, 1344), (832, 1216), (1024, 1024), (1216, 832)}
-ANLAS_WARNING = "Это может тратить Anlas. Включи 💎 PRO / Анласы, если хочешь разрешить дорогие режимы."
+ANLAS_WARNING = "💎 Эта функция временно отключена."
+DAILY_GENERATION_LIMIT = 10
+NON_ADMIN_COOLDOWN_SECONDS = 60
+GENERATION_TIMEOUT_SECONDS = 180
+generation_lock = asyncio.Lock()
+generation_waiting = 0
 SETTING_PROMPTS = {
     "size": "📐 Пришли размер, например <code>832x1216</code>.",
     "steps": "👣 Пришли количество шагов, например <code>28</code>.",
@@ -205,7 +210,8 @@ def generation_settings_summary(s) -> str:
         f"🧠 Модель: <code>{html.escape(s.model_name)}</code>"
     )
 
-def prompt_preview_text(prompt: str, original: str = "", settings=None) -> str:
+def prompt_preview_text(prompt: str, original: str = "", settings=None, remaining: int | None = None) -> str:
+    remaining_line = f"\n\nСегодня осталось: {remaining}/{DAILY_GENERATION_LIMIT}" if remaining is not None else ""
     if original and original.strip() and original.strip() != prompt.strip():
         return (
             "📝 <b>Промт готов. Запускаем?</b>\n\n"
@@ -214,11 +220,13 @@ def prompt_preview_text(prompt: str, original: str = "", settings=None) -> str:
             "<b>Теговый промт:</b>\n"
             f"<code>{html.escape(prompt[:3000])}</code>"
             + ("\n\n" + generation_settings_summary(settings) if settings else "")
+            + remaining_line
         )
     return (
         "📝 <b>Промт готов. Запускаем?</b>\n\n"
         f"<code>{html.escape(prompt[:3000])}</code>"
         + ("\n\n" + generation_settings_summary(settings) if settings else "")
+        + remaining_line
     )
 
 def apply_anlas_safe_defaults(user_id: int):
@@ -266,12 +274,88 @@ def artraccoon_prompt_defaults() -> dict:
         "artraccoon_character_position": "",
     }
 
+def today_key() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+def daily_count_for(s) -> int:
+    return int(s.daily_generation_count or 0) if s.daily_generation_date == today_key() else 0
+
+def remaining_generations(user_id: int) -> int | None:
+    if user_id in ADMIN_IDS:
+        return None
+    return max(0, DAILY_GENERATION_LIMIT - daily_count_for(get_settings(user_id)))
+
+def mark_generation_started(user_id: int) -> None:
+    s = get_settings(user_id)
+    updates = {"last_generation_started_at": datetime.now(timezone.utc).isoformat()}
+    if user_id not in ADMIN_IDS:
+        count = daily_count_for(s)
+        updates.update({"daily_generation_date": today_key(), "daily_generation_count": count + 1})
+    patch_settings(user_id, **updates)
+
+def cooldown_remaining(user_id: int) -> int:
+    if user_id in ADMIN_IDS:
+        return 0
+    raw = get_settings(user_id).last_generation_started_at
+    if not raw:
+        return 0
+    try:
+        started = datetime.fromisoformat(raw)
+    except ValueError:
+        return 0
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    return max(0, int(NON_ADMIN_COOLDOWN_SECONDS - elapsed))
+
+def user_label(user: types.User) -> str:
+    parts = [f"id={user.id}"]
+    if user.username:
+        parts.append(f"@{user.username}")
+    name = " ".join(x for x in [user.first_name, user.last_name] if x)
+    if name:
+        parts.append(name)
+    return " / ".join(parts)
+
+def moderation_summary(user: types.User, original_prompt: str, final_prompt: str, s) -> str:
+    return (
+        "🛡 <b>Модерация генерации</b>\n"
+        f"<b>Пользователь:</b> <code>{html.escape(user_label(user))}</code>\n\n"
+        f"<b>Исходный промт:</b>\n<code>{html.escape((original_prompt or final_prompt)[:1200])}</code>\n\n"
+        f"<b>Промт в NovelAI:</b>\n<code>{html.escape(final_prompt[:1200])}</code>\n\n"
+        f"<b>Негатив:</b>\n<code>{html.escape((s.negative_prompt or '—')[:1000])}</code>\n\n"
+        f"{generation_settings_summary(s)}"
+    )
+
+async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: str, final_prompt: str, s) -> None:
+    if user.id in ADMIN_IDS:
+        return
+    text = moderation_summary(user, original_prompt, final_prompt, s)
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot_obj.send_message(admin_id, text, parse_mode="HTML")
+        except Exception:
+            log.exception("Failed to send moderation copy to admin %s", admin_id)
+
+async def send_moderation_image(bot_obj: Bot, user: types.User, img: bytes, original_prompt: str, final_prompt: str, s, idx: int) -> None:
+    if user.id in ADMIN_IDS:
+        return
+    caption = moderation_summary(user, original_prompt, final_prompt, s)[:1000]
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot_obj.send_photo(
+                admin_id,
+                BufferedInputFile(img, filename=f"moderation_{user.id}_{idx}.png"),
+                caption=caption,
+                parse_mode="HTML",
+            )
+        except Exception:
+            log.exception("Failed to send moderation image to admin %s", admin_id)
+
 async def show_pending_prompt(message: types.Message, user_id: int) -> None:
     s = get_settings(user_id)
     if not s.pending_prompt:
         await message.answer("📝 Черновик пуст. Пришли новый промт обычным сообщением.", reply_markup=main_menu())
         return
-    preview = art_prompt_preview_text(s) if s.artraccoon_mode else prompt_preview_text(s.pending_prompt, s.pending_original_prompt, s)
+    preview = art_prompt_preview_text(s) if s.artraccoon_mode else prompt_preview_text(s.pending_prompt, s.pending_original_prompt, s, remaining_generations(user_id))
     await message.answer(
         preview,
         parse_mode="HTML",
@@ -304,7 +388,7 @@ def settings_text(user_id: int) -> str:
 
 def settings_markup_for(user_id: int):
     s = get_settings(user_id)
-    return settings_menu((s.pro_mode and user_id in ADMIN_IDS) or s.artraccoon_mode)
+    return settings_menu((s.pro_mode and user_id in ADMIN_IDS) or s.artraccoon_mode, show_pro_button=user_id in ADMIN_IDS)
 
 def prompt_menu_for(s, user_id: int):
     return pending_prompt_menu(bool(s.pending_image_path), (s.pro_mode and user_id in ADMIN_IDS) or s.artraccoon_mode, compact=s.artraccoon_mode)
@@ -405,7 +489,7 @@ async def help_cmd(message: types.Message):
 async def xxx_cmd(message: types.Message):
     s = get_settings(message.from_user.id)
     pro_ui = (s.pro_mode and message.from_user.id in ADMIN_IDS) or s.artraccoon_mode
-    await message.answer(settings_text(message.from_user.id), reply_markup=settings_menu(pro_ui), parse_mode="HTML")
+    await message.answer(settings_text(message.from_user.id), reply_markup=settings_markup_for(message.from_user.id), parse_mode="HTML")
 
 @dp.message(Command("meta"))
 async def meta_cmd(message: types.Message):
@@ -457,12 +541,12 @@ async def settings_cmd(message: types.Message):
 async def pro_cmd(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         patch_settings(message.from_user.id, pro_mode=False)
-        await message.answer("💎 PRO-режим пока доступен только администратору.")
+        await message.answer("💎 Эта функция временно отключена.")
         return
     s = get_settings(message.from_user.id)
     patch_settings(message.from_user.id, pro_mode=not s.pro_mode)
     s = get_settings(message.from_user.id)
-    await message.answer("💎 PRO режим включён. Расширенные функции могут тратить Anlas." if s.pro_mode else "✅ Обычный режим включён. Дорогие функции скрыты.", reply_markup=settings_menu(s.pro_mode or s.artraccoon_mode))
+    await message.answer("💎 PRO режим включён. Расширенные функции могут тратить Anlas." if s.pro_mode else "✅ Обычный режим включён. Дорогие функции скрыты.", reply_markup=settings_markup_for(message.from_user.id))
 
 @dp.message(Command("ArtRaccoonoff"))
 async def artraccoon_off_cmd(message: types.Message):
@@ -616,16 +700,30 @@ async def generate_image_from_prompt(
         return
 
     user_id = user.id
-    if ADMIN_IDS and user_id not in ADMIN_IDS:
-        await message.answer("⛔ Генерация доступна только администраторам.", reply_markup=main_menu())
+    if user_id not in ADMIN_IDS and remaining_generations(user_id) == 0:
+        await message.answer("🎨 Лимит на сегодня закончился: 10/10 генераций. Попробуй завтра.", reply_markup=main_menu())
+        return
+
+    cd = cooldown_remaining(user_id)
+    if cd > 0:
+        await message.answer(f"⏳ Подожди ещё {cd} сек. перед следующей генерацией.", reply_markup=main_menu())
         return
 
     s = patch_settings(user_id, last_prompt=prompt)
     s = apply_anlas_safe_defaults(user_id)
+    original_prompt = s.pending_original_prompt or prompt
+    try:
+        final_prompt = nai.build_prompt(prompt, s)
+    except Exception:
+        final_prompt = prompt
 
     if actor is None:
         await notify_admins_about_prompt(message, prompt)
 
+    global generation_waiting
+    if generation_lock.locked() or generation_waiting:
+        await message.answer(f"⏳ Генерация поставлена в очередь. Перед тобой: {generation_waiting}")
+    generation_waiting += 1
     wait = await message.answer("🎨 Генерирую...")
 
     image_bytes = None
@@ -642,12 +740,19 @@ async def generate_image_from_prompt(
         await wait.edit_text("NovelAI не принял Character Payload, пробую fallback-сборку.")
 
     try:
-        images = await nai.generate(
-            prompt,
-            s,
-            image_bytes=image_bytes,
-            on_character_payload_fallback=show_character_payload_fallback,
-        )
+        async with generation_lock:
+            generation_waiting = max(0, generation_waiting - 1)
+            mark_generation_started(user_id)
+            await send_moderation_copy(message.bot, user, original_prompt, final_prompt, s)
+            images = await asyncio.wait_for(
+                nai.generate(
+                    prompt,
+                    s,
+                    image_bytes=image_bytes,
+                    on_character_payload_fallback=show_character_payload_fallback,
+                ),
+                timeout=GENERATION_TIMEOUT_SECONDS,
+            )
         add_history(user_id, {"prompt": prompt, "seed": s.seed, "model": s.model_name, "size": f"{s.width}x{s.height}", "timestamp": datetime.now(timezone.utc).isoformat()})
         patch_settings(user_id, pending_image_path="")
         await wait.delete()
@@ -657,6 +762,7 @@ async def generate_image_from_prompt(
             image = BufferedInputFile(img, filename=name)
             caption = f"✅ <b>Готово</b>\\n<code>{html.escape(prompt[:900])}</code>"
             try:
+                await send_moderation_image(message.bot, user, img, original_prompt, final_prompt, s, idx)
                 await message.answer_photo(
                     image,
                     caption=caption,
@@ -672,6 +778,11 @@ async def generate_image_from_prompt(
                     reply_markup=after_generation_menu(),
                 )
 
+    except asyncio.TimeoutError:
+        await wait.edit_text(
+            "⏱ NovelAI слишком долго отвечает. Попробуй ещё раз позже.",
+            reply_markup=main_menu(),
+        )
     except NovelAIError as e:
         await wait.edit_text(
             f"❌ NovelAI не смог сгенерировать изображение. {str(e)[:3300]}",
@@ -941,11 +1052,60 @@ async def cb_prompt_cancel(call: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("settings:"))
 async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):
     field = call.data.split(":", 1)[1]
+    s = get_settings(call.from_user.id)
+    advanced = (s.pro_mode and call.from_user.id in ADMIN_IDS) or s.artraccoon_mode
+    if call.from_user.id not in ADMIN_IDS and field in {"n", "sampler", "uc", "cfg", "noise", "img2img", "modes"}:
+        patch_settings(call.from_user.id, pro_mode=False, n_samples=1)
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        await call.message.answer("💎 Эта функция временно отключена.")
+        return
+    if field == "model":
+        await call.message.edit_text("🧠 Выбери модель:", reply_markup=model_menu())
+        await call.answer()
+        return
+    if field == "size":
+        await call.message.edit_text("📐 Выбери размер:", reply_markup=size_menu())
+        await call.answer()
+        return
+    if field == "sampler":
+        await call.message.edit_text("🎛 Выбери sampler:", reply_markup=sampler_menu())
+        await call.answer()
+        return
+    if field == "uc":
+        await call.message.edit_text("🧪 Выбери UC-пресет:", reply_markup=uc_menu())
+        await call.answer()
+        return
+    if field == "noise":
+        await call.message.edit_text("🌊 Выбери noise schedule:", reply_markup=noise_menu())
+        await call.answer()
+        return
+    if field == "seed":
+        await call.message.edit_text("🎲 Seed:", reply_markup=seed_menu())
+        await call.answer()
+        return
+    if field == "n":
+        if not advanced:
+            await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+            return
+        await call.message.edit_text("🖼 Количество картинок:", reply_markup=samples_menu())
+        await call.answer()
+        return
     if field == "modes":
-        s = get_settings(call.from_user.id)
         await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags))
         await call.answer()
         return
+    prompt = SETTING_PROMPTS.get(field)
+    if not prompt:
+        await call.answer("Неизвестная настройка", show_alert=True)
+        return
+    await state.set_state(GenState.waiting_setting)
+    await state.update_data(setting_field=field)
+    await call.message.answer(prompt + "\n\n/cancel — отменить ввод.", parse_mode="HTML")
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("settings_input:"))
+async def cb_settings_input(call: types.CallbackQuery, state: FSMContext):
+    field = call.data.split(":", 1)[1]
     prompt = SETTING_PROMPTS.get(field)
     if not prompt:
         await call.answer("Неизвестная настройка", show_alert=True)
@@ -1358,6 +1518,9 @@ async def set_size(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:sampler:"))
 async def set_sampler(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        return
     sampler = call.data.split(":", 2)[2]
     if sampler not in SAMPLERS:
         await call.answer("Неизвестный sampler", show_alert=True)
@@ -1368,6 +1531,9 @@ async def set_sampler(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:uc:"))
 async def set_uc(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        return
     uc = call.data.split(":", 2)[2]
     if uc not in UC_PRESETS:
         await call.answer("Неизвестный UC preset", show_alert=True)
@@ -1378,8 +1544,12 @@ async def set_uc(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:n:"))
 async def set_n(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        patch_settings(call.from_user.id, n_samples=1)
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        return
     val = int(call.data.split(":", 2)[2])
-    if val > 1 and not (get_settings(call.from_user.id).pro_mode and call.from_user.id in ADMIN_IDS):
+    if val > 1 and not ((get_settings(call.from_user.id).pro_mode and call.from_user.id in ADMIN_IDS) or get_settings(call.from_user.id).artraccoon_mode):
         patch_settings(call.from_user.id, n_samples=1)
         await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
         await call.answer(ANLAS_WARNING, show_alert=True)
@@ -1419,6 +1589,9 @@ async def set_seed(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:cfg:"))
 async def set_cfg(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        return
     try:
         val = max(0.0, min(1.0, float(call.data.split(":", 2)[2])))
     except ValueError:
@@ -1430,6 +1603,9 @@ async def set_cfg(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:noise:"))
 async def set_noise(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        return
     val = call.data.split(":", 2)[2]
     if val not in NOISE_SCHEDULES:
         await call.answer("Неизвестный noise schedule", show_alert=True)
@@ -1440,6 +1616,9 @@ async def set_noise(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:img2img:"))
 async def set_img2img(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        return
     raw = call.data.split(":", 2)[2]
     try:
         strength, noise = [float(x) for x in raw.split("/", 1)]
@@ -1455,8 +1634,8 @@ async def set_img2img(call: types.CallbackQuery):
 async def toggle_pro(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
         patch_settings(call.from_user.id, pro_mode=False)
-        await call.answer("💎 PRO-режим пока доступен только администратору.", show_alert=True)
-        await call.message.answer("💎 PRO-режим пока доступен только администратору.")
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        await call.message.answer("💎 Эта функция временно отключена.")
         return
     s = get_settings(call.from_user.id)
     new_value = not s.pro_mode
@@ -1473,6 +1652,9 @@ async def toggle_pro(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "toggle:furry")
 async def toggle_furry(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        return
     s = get_settings(call.from_user.id)
     patch_settings(call.from_user.id, furry_mode=not s.furry_mode)
     s = get_settings(call.from_user.id)
@@ -1481,6 +1663,9 @@ async def toggle_furry(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "toggle:background")
 async def toggle_background(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        return
     s = get_settings(call.from_user.id)
     patch_settings(call.from_user.id, background_mode=not s.background_mode)
     s = get_settings(call.from_user.id)
@@ -1489,6 +1674,9 @@ async def toggle_background(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "toggle:quality")
 async def toggle_quality(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        return
     s = get_settings(call.from_user.id)
     patch_settings(call.from_user.id, add_quality_tags=not s.add_quality_tags)
     s = get_settings(call.from_user.id)

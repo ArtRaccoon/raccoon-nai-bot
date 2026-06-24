@@ -70,7 +70,7 @@ def presets_menu() -> InlineKeyboardMarkup:
     buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"))
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
-def settings_menu(pro: bool = True) -> InlineKeyboardMarkup:
+def settings_menu(pro: bool = True, show_pro_button: bool = True) -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text="📐 Размер", callback_data="settings:size"),
         InlineKeyboardButton(text="👣 Шаги", callback_data="settings:steps"),
@@ -89,8 +89,9 @@ def settings_menu(pro: bool = True) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📎 Img2Img сила", callback_data="settings:img2img"),
             InlineKeyboardButton(text="🦝 Режимы", callback_data="settings:modes"),
         ])
+    if show_pro_button:
+        buttons.append(InlineKeyboardButton(text="💎 PRO / Анласы", callback_data="toggle:pro"))
     buttons.extend([
-        InlineKeyboardButton(text="💎 PRO / Анласы", callback_data="toggle:pro"),
         InlineKeyboardButton(text="♻️ Сброс настроек", callback_data="reset:ask"),
         InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"),
     ])
@@ -127,6 +128,19 @@ def noise_menu() -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(text=name, callback_data=f"set:noise:{name}") for name in NOISE_SCHEDULES]
     buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"))
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
+
+def seed_menu() -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(text="🎲 random", callback_data="set:seed:-1"),
+        InlineKeyboardButton(text="✍️ ввести seed", callback_data="settings_input:seed"),
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"),
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
+
+def samples_menu() -> InlineKeyboardMarkup:
+    buttons = [InlineKeyboardButton(text=str(n), callback_data=f"set:n:{n}") for n in (1, 2, 3, 4)]
+    buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"))
+    return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
 def meta_import_menu() -> InlineKeyboardMarkup:
     buttons = [
