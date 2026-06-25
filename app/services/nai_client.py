@@ -13,7 +13,10 @@ log = logging.getLogger(__name__)
 SAFE_DEFAULT_MODEL = "nai-diffusion-4-5-full"
 SECRET_PAYLOAD_KEYS = {"authorization", "token", "api_token", "access_token", "secret"}
 SITE_MODE_STEPS = 28
-SITE_MODE_SCALE = 5.0
+SITE_MODE_SCALE = 7.5
+SITE_MODE_CFG_RESCALE = 0.18
+SITE_MODE_SAMPLER = "k_dpmpp_sde"
+SITE_MODE_NOISE_SCHEDULE = "karras"
 
 
 def _join_prompt_parts(parts: list[str]) -> str:
@@ -52,12 +55,16 @@ def payload_summary(payload: dict, settings: UserSettings | None = None) -> dict
         uc_preset = f"{settings.uc_preset} / ucPreset={uc_preset}"
     return {
         "model": payload.get("model"),
+        "params_version": parameters.get("params_version"),
         "width": parameters.get("width"),
         "height": parameters.get("height"),
         "steps": parameters.get("steps"),
         "scale": parameters.get("scale"),
         "cfg_rescale": parameters.get("cfg_rescale"),
         "sampler": parameters.get("sampler"),
+        "qualityToggle": parameters.get("qualityToggle"),
+        "dynamic_thresholding": parameters.get("dynamic_thresholding"),
+        "variety_plus": parameters.get("variety_plus"),
         "noise_schedule": parameters.get("noise_schedule"),
         "seed": parameters.get("seed", "random/omitted"),
         "uc_preset": uc_preset,
@@ -152,14 +159,15 @@ class NovelAIClient:
             "params_version": 3,
             "width": settings.width,
             "height": settings.height,
-            "scale": SITE_MODE_SCALE if settings.nai_site_mode else settings.scale,
+            "scale": settings.scale,
             "sampler": settings.sampler,
-            "steps": SITE_MODE_STEPS if settings.nai_site_mode else settings.steps,
-            "n_samples": 1 if settings.nai_site_mode else settings.n_samples,
+            "steps": settings.steps,
+            "n_samples": settings.n_samples,
             "ucPreset": 0,
             "qualityToggle": settings.add_quality_tags,
             "dynamic_thresholding": False,
-            "cfg_rescale": 0 if settings.nai_site_mode else settings.cfg_rescale,
+            "variety_plus": settings.variety_plus,
+            "cfg_rescale": settings.cfg_rescale,
             "noise_schedule": settings.noise_schedule,
             "negative_prompt": uc,
         }
@@ -245,7 +253,10 @@ class NovelAIClient:
             "cfg_rescale": parameters["cfg_rescale"],
             "n_samples": parameters["n_samples"],
             "ucPreset": parameters["ucPreset"],
+            "params_version": parameters["params_version"],
             "qualityToggle": parameters["qualityToggle"],
+            "dynamic_thresholding": parameters["dynamic_thresholding"],
+            "variety_plus": parameters.get("variety_plus"),
             "negative_prompt": parameters["negative_prompt"],
             "v4_prompt": "v4_prompt" in parameters,
             "v4_negative_prompt": "v4_negative_prompt" in parameters,

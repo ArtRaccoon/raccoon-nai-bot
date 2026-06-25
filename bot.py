@@ -22,7 +22,10 @@ from keyboards import (
     main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
     after_generation_menu, generation_item_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu, moderation_dictionary_menu, dictionary_menu, dictionary_pending_menu
 )
-from app.services.nai_client import NovelAIClient, NovelAIError, payload_summary, sanitize_payload
+from app.services.nai_client import (
+    NovelAIClient, NovelAIError, payload_summary, sanitize_payload,
+    SITE_MODE_STEPS, SITE_MODE_SCALE, SITE_MODE_CFG_RESCALE, SITE_MODE_SAMPLER, SITE_MODE_NOISE_SCHEDULE,
+)
 from prompt_tools import (
     DICTIONARY_PATH, add_learned_mapping, has_unknown_russian, learn_from_english_prompt,
     load_learned_dictionary, natural_to_nai_tags, parse_english_tags, reject_tags,
@@ -326,6 +329,7 @@ def safe_generation_defaults() -> dict:
         "uc_preset": defaults.uc_preset,
         "cfg_rescale": defaults.cfg_rescale,
         "noise_schedule": defaults.noise_schedule,
+        "variety_plus": defaults.variety_plus,
         "img2img_strength": defaults.img2img_strength,
         "img2img_noise": defaults.img2img_noise,
         "pro_mode": False,
@@ -489,7 +493,8 @@ def settings_text(user_id: int) -> str:
         f"Furry: <code>{s.furry_mode}</code>\n"
         f"Background: <code>{s.background_mode}</code>\n"
         f"Quality tags: <code>{s.add_quality_tags}</code>\n"
-        f"CFG rescale: <code>{s.cfg_rescale}</code>\n"
+        + (f"Variety+: <code>{s.variety_plus}</code>\n" if user_id in ADMIN_IDS or s.pro_mode or s.artraccoon_mode else "")
+        + f"CFG rescale: <code>{s.cfg_rescale}</code>\n"
         f"Noise schedule: <code>{s.noise_schedule}</code>\n"
         f"Img2Img: <code>{s.img2img_strength} / {s.img2img_noise}</code>\n"
         f"Промт переведён из русского: <code>{bool(s.pending_original_prompt and s.pending_original_prompt != s.pending_prompt)}</code>"
@@ -768,7 +773,20 @@ async def nai_site_mode_cmd(message: types.Message):
         await message.answer("Команда не найдена.")
         return
     s = get_settings(message.from_user.id)
-    s = patch_settings(message.from_user.id, nai_site_mode=not s.nai_site_mode)
+    enabling = not s.nai_site_mode
+    updates = {"nai_site_mode": enabling}
+    if enabling:
+        updates.update({
+            "steps": SITE_MODE_STEPS,
+            "scale": SITE_MODE_SCALE,
+            "cfg_rescale": SITE_MODE_CFG_RESCALE,
+            "sampler": SITE_MODE_SAMPLER,
+            "noise_schedule": SITE_MODE_NOISE_SCHEDULE,
+            "n_samples": 1,
+            "add_quality_tags": True,
+            "variety_plus": True,
+        })
+    s = patch_settings(message.from_user.id, **updates)
     await message.answer(
         "🌐 Website-compatible mode: "
         f"<code>{'ON' if s.nai_site_mode else 'OFF'}</code>",
@@ -1226,7 +1244,7 @@ async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):
         await call.answer()
         return
     if field == "modes":
-        await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags))
+        await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags, s.variety_plus))
         await call.answer()
         return
     prompt = SETTING_PROMPTS.get(field)
@@ -1255,7 +1273,7 @@ async def cb_modes(call: types.CallbackQuery):
     s = get_settings(call.from_user.id)
     await call.message.edit_text(
         "🦝 Режимы:",
-        reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags)
+        reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags, s.variety_plus)
     )
     await call.answer()
 
@@ -1921,7 +1939,7 @@ async def toggle_furry(call: types.CallbackQuery):
     s = get_settings(call.from_user.id)
     patch_settings(call.from_user.id, furry_mode=not s.furry_mode)
     s = get_settings(call.from_user.id)
-    await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags))
+    await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags, s.variety_plus))
     await call.answer()
 
 @dp.callback_query(F.data == "toggle:background")
@@ -1932,7 +1950,7 @@ async def toggle_background(call: types.CallbackQuery):
     s = get_settings(call.from_user.id)
     patch_settings(call.from_user.id, background_mode=not s.background_mode)
     s = get_settings(call.from_user.id)
-    await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags))
+    await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags, s.variety_plus))
     await call.answer()
 
 @dp.callback_query(F.data == "toggle:quality")
@@ -1943,9 +1961,19 @@ async def toggle_quality(call: types.CallbackQuery):
     s = get_settings(call.from_user.id)
     patch_settings(call.from_user.id, add_quality_tags=not s.add_quality_tags)
     s = get_settings(call.from_user.id)
-    await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags))
+    await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags, s.variety_plus))
     await call.answer()
 
+@dp.callback_query(F.data == "toggle:variety")
+async def toggle_variety(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        return
+    s = get_settings(call.from_user.id)
+    patch_settings(call.from_user.id, variety_plus=not s.variety_plus)
+    s = get_settings(call.from_user.id)
+    await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags, s.variety_plus))
+    await call.answer("Variety+ обновлён")
 
 
 def _is_admin(user_id: int) -> bool:

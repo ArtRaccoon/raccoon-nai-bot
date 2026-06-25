@@ -182,11 +182,12 @@ def meta_import_menu() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
-def modes_menu(furry: bool, background: bool, quality: bool) -> InlineKeyboardMarkup:
+def modes_menu(furry: bool, background: bool, quality: bool, variety_plus: bool = True) -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text=f"🦊 Furry: {'ON' if furry else 'OFF'}", callback_data="toggle:furry"),
         InlineKeyboardButton(text=f"🌄 Background: {'ON' if background else 'OFF'}", callback_data="toggle:background"),
         InlineKeyboardButton(text=f"✨ Quality tags: {'ON' if quality else 'OFF'}", callback_data="toggle:quality"),
+        InlineKeyboardButton(text=f"🎨 Variety+: {'ON' if variety_plus else 'OFF'}", callback_data="toggle:variety"),
         InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"),
         main_menu_button(),
     ]
