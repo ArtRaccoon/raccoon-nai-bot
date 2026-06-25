@@ -203,3 +203,28 @@ def artraccoon_menu() -> InlineKeyboardMarkup:
         main_menu_button(),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
+
+
+def moderation_dictionary_menu(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Review", callback_data=f"dict_review:{token}"), InlineKeyboardButton(text="❌ Reject", callback_data=f"dict_reject:{token}")],
+        [InlineKeyboardButton(text="📚 Dictionary", callback_data="dict:menu")],
+    ])
+
+def dictionary_menu() -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(text="📚 Statistics", callback_data="dict:stats"),
+        InlineKeyboardButton(text="🕓 Pending", callback_data="dict:pending"),
+        InlineKeyboardButton(text="➕ Add manually", callback_data="dict:add"),
+        InlineKeyboardButton(text="📤 Export", callback_data="dict:export"),
+        InlineKeyboardButton(text="📥 Import", callback_data="dict:import"),
+        InlineKeyboardButton(text="🧹 Cleanup rejected", callback_data="dict:cleanup"),
+        main_menu_button(),
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
+
+def dictionary_pending_menu(tags: list[str]) -> InlineKeyboardMarkup:
+    buttons = [InlineKeyboardButton(text=tag[:60], callback_data=f"dict_one:{i}") for i, tag in enumerate(tags[:40])]
+    buttons.append(InlineKeyboardButton(text="❌ Reject all", callback_data="dict:reject_pending"))
+    buttons.append(InlineKeyboardButton(text="⬅️ Dictionary", callback_data="dict:menu"))
+    return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
