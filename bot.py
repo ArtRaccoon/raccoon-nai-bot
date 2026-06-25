@@ -20,10 +20,14 @@ from dotenv import load_dotenv
 from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRESETS, NOISE_SCHEDULES, UserSettings, AELITA_DESCRIPTION
 from keyboards import (
     main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
-    after_generation_menu, generation_item_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu
+    after_generation_menu, generation_item_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu, moderation_dictionary_menu, dictionary_menu, dictionary_pending_menu
 )
 from app.services.nai_client import NovelAIClient, NovelAIError
-from prompt_tools import natural_to_nai_tags, looks_like_english_tags
+from prompt_tools import (
+    DICTIONARY_PATH, add_learned_mapping, has_unknown_russian, learn_from_english_prompt,
+    load_learned_dictionary, natural_to_nai_tags, parse_english_tags, reject_tags,
+    looks_like_english_tags, save_learned_dictionary
+)
 from storage import (
     get_settings, save_settings, patch_settings, add_history, get_history,
     add_favorite, get_favorites, delete_favorite, set_last_metadata, get_last_metadata
@@ -56,6 +60,9 @@ class GenState(StatesGroup):
     waiting_ar_base_uc = State()
     waiting_ar_char_neg = State()
     waiting_setting = State()
+    waiting_dict_ru = State()
+    waiting_dict_tags = State()
+    waiting_dict_review_ru = State()
 
 TMP_DIR = Path("data/tmp_images")
 TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -73,6 +80,7 @@ NON_ADMIN_COOLDOWN_SECONDS = 60
 GENERATION_TIMEOUT_SECONDS = 180
 generation_lock = asyncio.Lock()
 generation_waiting = 0
+moderation_candidates: dict[str, list[str]] = {}
 SETTING_PROMPTS = {
     "size": "📐 Пришли размер, например <code>832x1216</code>.",
     "steps": "👣 Пришли количество шагов, например <code>28</code>.",
@@ -248,6 +256,7 @@ def generation_settings_summary(s) -> str:
 
 def prompt_preview_text(prompt: str, original: str = "", settings=None, remaining: int | None = None) -> str:
     remaining_line = f"\n\nСегодня осталось: {remaining}/{DAILY_GENERATION_LIMIT}" if remaining is not None else ""
+    warning_line = "\n\n⚠️ Проверь перевод." if original and has_unknown_russian(original) else ""
     if original and original.strip() and original.strip() != prompt.strip():
         return (
             "📝 <b>Промт готов. Запускаем?</b>\n\n"
@@ -255,12 +264,14 @@ def prompt_preview_text(prompt: str, original: str = "", settings=None, remainin
             f"<code>{html.escape(original[:1400])}</code>\n\n"
             "<b>Теговый промт:</b>\n"
             f"<code>{html.escape(prompt[:3000])}</code>"
+            + warning_line
             + ("\n\n" + generation_settings_summary(settings) if settings else "")
             + remaining_line
         )
     return (
         "📝 <b>Промт готов. Запускаем?</b>\n\n"
         f"<code>{html.escape(prompt[:3000])}</code>"
+        + warning_line
         + ("\n\n" + generation_settings_summary(settings) if settings else "")
         + remaining_line
     )
@@ -356,38 +367,49 @@ def _blockquote(text: str, limit: int = 3500) -> str:
     expandable = " expandable" if len(text or "") > 900 else ""
     return f"<blockquote{expandable}>{safe}</blockquote>"
 
-def moderation_summary(user: types.User, original_prompt: str, final_prompt: str, s) -> str:
+def moderation_summary(user: types.User, original_prompt: str, final_prompt: str, s, candidates: list[str] | None = None) -> str:
     settings = (
         f"model={html.escape(s.model_name)}, size={s.width}x{s.height}, "
         f"steps={s.steps}, cfg={s.scale}, seed={'random' if s.seed == -1 else s.seed}, "
         f"sampler={html.escape(s.sampler)}, n={s.n_samples}"
     )
+    candidates_block = ""
+    if candidates:
+        lines = "\n".join(f"• {html.escape(tag)}" for tag in candidates)
+        candidates_block = f"\n\n📚 <b>New dictionary candidates</b>\n{lines}"
     return (
         "🛡 <b>Модерация генерации</b>\n"
         f"👤 <b>User:</b> <code>{html.escape(user_label(user))}</code>\n"
         f"⚙️ <b>Settings:</b> <code>{settings}</code>\n\n"
-        "📝 <b>Original prompt</b>\n"
+        "📝 <b>Prompt</b>\n"
         f"{_blockquote(original_prompt or final_prompt)}\n"
-        "🎯 <b>Final prompt</b>\n"
+        "🎨 <b>Final Prompt</b>\n"
         f"{_blockquote(final_prompt)}\n"
         "🚫 <b>Negative prompt</b>\n"
         f"{_blockquote(s.negative_prompt or '—', 1800)}"
+        f"{candidates_block}"
     )
 
-async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: str, final_prompt: str, s) -> None:
+async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: str, final_prompt: str, s, candidates: list[str] | None = None) -> None:
     if user.id in ADMIN_IDS:
         return
-    text = moderation_summary(user, original_prompt, final_prompt, s)
+    text = moderation_summary(user, original_prompt, final_prompt, s, candidates)
+    token = f"{user.id}:{int(datetime.now(timezone.utc).timestamp())}"
+    if candidates:
+        moderation_candidates[token] = list(dict.fromkeys(candidates))
+    markup = moderation_dictionary_menu(token) if candidates else None
     for admin_id in ADMIN_IDS:
         try:
-            await bot_obj.send_message(admin_id, text, parse_mode="HTML")
+            await bot_obj.send_message(admin_id, text, parse_mode="HTML", reply_markup=markup)
         except Exception:
             log.exception("Failed to send moderation prompt summary to admin %s", admin_id)
 
-async def send_moderation_image(bot_obj: Bot, user: types.User, img: bytes, original_prompt: str, final_prompt: str, s, idx: int) -> None:
+async def send_moderation_image(bot_obj: Bot, user: types.User, img: bytes, original_prompt: str, final_prompt: str, s, idx: int, candidates: list[str] | None = None) -> None:
     if user.id in ADMIN_IDS:
         return
     caption = f"🛡 <b>Готовое изображение</b>\n👤 <code>{html.escape(user_label(user))}</code>\n📐 <code>{s.width}x{s.height}</code> · 🎲 <code>{'random' if s.seed == -1 else s.seed}</code>"
+    if candidates:
+        caption += "\n\n📚 <b>Dictionary candidates</b>\n" + "\n".join(f"• {html.escape(tag)}" for tag in candidates[:20])
     for admin_id in ADMIN_IDS:
         try:
             await bot_obj.send_photo(
@@ -790,7 +812,8 @@ async def generate_image_from_prompt(
         async with generation_lock:
             generation_waiting = max(0, generation_waiting - 1)
             mark_generation_started(user_id)
-            await send_moderation_copy(message.bot, user, original_prompt, final_prompt, s)
+            candidates = learn_from_english_prompt(prompt) if looks_like_english_tags(prompt) else []
+            await send_moderation_copy(message.bot, user, original_prompt, final_prompt, s, candidates)
             images = await asyncio.wait_for(
                 nai.generate(
                     prompt,
@@ -824,7 +847,7 @@ async def generate_image_from_prompt(
             image = BufferedInputFile(img, filename=name)
             caption = f"✅ <b>Готово</b>\\nSeed: <code>{s.seed}</code>\\nРазмер: <code>{s.width}x{s.height}</code>"
             try:
-                await send_moderation_image(message.bot, user, img, original_prompt, final_prompt, s, idx)
+                await send_moderation_image(message.bot, user, img, original_prompt, final_prompt, s, idx, candidates)
                 await message.answer_photo(
                     image,
                     caption=caption,
@@ -1857,6 +1880,233 @@ async def toggle_quality(call: types.CallbackQuery):
     patch_settings(call.from_user.id, add_quality_tags=not s.add_quality_tags)
     s = get_settings(call.from_user.id)
     await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags))
+    await call.answer()
+
+
+
+def _is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+def _dictionary_stats_text() -> str:
+    data = load_learned_dictionary()
+    top = sorted(data["tag_frequency"].items(), key=lambda item: item[1], reverse=True)[:10]
+    top_text = "\n".join(f"• {html.escape(tag)} — {count}" for tag, count in top) or "—"
+    return (
+        "📚 <b>Dictionary statistics</b>\n"
+        f"Dictionary entries: <code>{len(data['ru_to_tags'])}</code>\n"
+        f"Pending candidates: <code>{len(data['pending_suggestions'])}</code>\n"
+        f"Rejected: <code>{len(data['rejected_tags'])}</code>\n\n"
+        f"<b>Top learned tags</b>\n{top_text}"
+    )
+
+
+def _merge_dictionary_payload(payload: dict) -> int:
+    current = load_learned_dictionary()
+    incoming = payload if isinstance(payload, dict) else {}
+    added = 0
+    for ru, tags in incoming.get("ru_to_tags", {}).items():
+        before = set(current["ru_to_tags"].get(str(ru).strip().lower(), []))
+        add_learned_mapping(str(ru), tags if isinstance(tags, list) else [str(tags)])
+        after = set(load_learned_dictionary()["ru_to_tags"].get(str(ru).strip().lower(), []))
+        added += len(after - before)
+    current = load_learned_dictionary()
+    for tag, count in incoming.get("tag_frequency", {}).items():
+        if parse_english_tags(str(tag)):
+            current["tag_frequency"][str(tag).strip().lower()] = max(current["tag_frequency"].get(str(tag).strip().lower(), 0), int(count or 0))
+    for tag in incoming.get("pending_suggestions", []):
+        clean = parse_english_tags(str(tag))
+        for item in clean:
+            if item not in current["pending_suggestions"] and item not in current["rejected_tags"]:
+                current["pending_suggestions"].append(item)
+    for tag in incoming.get("rejected_tags", []):
+        reject_tags(parse_english_tags(str(tag)))
+    save_learned_dictionary(current)
+    return added
+
+
+@dp.message(Command("dict"))
+async def dict_cmd(message: types.Message):
+    if not message.from_user or not _is_admin(message.from_user.id):
+        await message.answer("Только для администратора.")
+        return
+    await message.answer("📚 <b>Dictionary</b>", parse_mode="HTML", reply_markup=dictionary_menu())
+
+
+@dp.callback_query(F.data == "dict:menu")
+async def cb_dict_menu(call: types.CallbackQuery):
+    if not _is_admin(call.from_user.id):
+        await call.answer("Только админ", show_alert=True)
+        return
+    await call.message.answer("📚 <b>Dictionary</b>", parse_mode="HTML", reply_markup=dictionary_menu())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "dict:stats")
+async def cb_dict_stats(call: types.CallbackQuery):
+    if not _is_admin(call.from_user.id):
+        await call.answer("Только админ", show_alert=True)
+        return
+    await call.message.answer(_dictionary_stats_text(), parse_mode="HTML", reply_markup=dictionary_menu())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "dict:pending")
+async def cb_dict_pending(call: types.CallbackQuery):
+    if not _is_admin(call.from_user.id):
+        await call.answer("Только админ", show_alert=True)
+        return
+    tags = load_learned_dictionary()["pending_suggestions"]
+    text = "🕓 <b>Pending candidates</b>\n" + ("\n".join(f"• {html.escape(t)}" for t in tags[:40]) or "—")
+    await call.message.answer(text, parse_mode="HTML", reply_markup=dictionary_pending_menu(tags))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("dict_review:"))
+async def cb_dict_review(call: types.CallbackQuery, state: FSMContext):
+    if not _is_admin(call.from_user.id):
+        await call.answer("Только админ", show_alert=True)
+        return
+    token = call.data.split(":", 1)[1]
+    tags = moderation_candidates.get(token) or load_learned_dictionary()["pending_suggestions"][:20]
+    if not tags:
+        await call.answer("Нет кандидатов", show_alert=True)
+        return
+    await state.update_data(review_tags=tags, review_index=0)
+    await state.set_state(GenState.waiting_dict_review_ru)
+    await call.message.answer(f"Введите русское слово или фразу\nдля:\n\n<code>{html.escape(tags[0])}</code>", parse_mode="HTML")
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("dict_reject:"))
+async def cb_dict_reject(call: types.CallbackQuery):
+    if not _is_admin(call.from_user.id):
+        await call.answer("Только админ", show_alert=True)
+        return
+    tags = moderation_candidates.pop(call.data.split(":", 1)[1], [])
+    reject_tags(tags)
+    await call.message.answer("❌ Кандидаты отклонены.", reply_markup=dictionary_menu())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "dict:reject_pending")
+async def cb_dict_reject_pending(call: types.CallbackQuery):
+    if not _is_admin(call.from_user.id):
+        await call.answer("Только админ", show_alert=True)
+        return
+    tags = load_learned_dictionary()["pending_suggestions"]
+    reject_tags(tags)
+    await call.message.answer("❌ Все pending-кандидаты отклонены.", reply_markup=dictionary_menu())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("dict_one:"))
+async def cb_dict_one(call: types.CallbackQuery, state: FSMContext):
+    if not _is_admin(call.from_user.id):
+        await call.answer("Только админ", show_alert=True)
+        return
+    tags = load_learned_dictionary()["pending_suggestions"]
+    idx = int(call.data.split(":", 1)[1])
+    if idx >= len(tags):
+        await call.answer("Устарело", show_alert=True)
+        return
+    await state.update_data(review_tags=[tags[idx]], review_index=0)
+    await state.set_state(GenState.waiting_dict_review_ru)
+    await call.message.answer(f"Введите русское слово или фразу\nдля:\n\n<code>{html.escape(tags[idx])}</code>", parse_mode="HTML")
+    await call.answer()
+
+
+@dp.message(GenState.waiting_dict_review_ru)
+async def dict_review_answer(message: types.Message, state: FSMContext):
+    if not message.from_user or not _is_admin(message.from_user.id):
+        return
+    ru = (message.text or "").strip()
+    data = await state.get_data()
+    tags = data.get("review_tags", [])
+    idx = int(data.get("review_index", 0))
+    if not ru or idx >= len(tags):
+        await state.clear()
+        return
+    add_learned_mapping(ru, [tags[idx]])
+    idx += 1
+    if idx < len(tags):
+        await state.update_data(review_index=idx)
+        await message.answer(f"Сохранено. Введите русское слово или фразу\nдля:\n\n<code>{html.escape(tags[idx])}</code>", parse_mode="HTML")
+        return
+    await state.clear()
+    await message.answer("✅ Кандидаты добавлены в словарь.", reply_markup=dictionary_menu())
+
+
+@dp.callback_query(F.data == "dict:add")
+async def cb_dict_add(call: types.CallbackQuery, state: FSMContext):
+    if not _is_admin(call.from_user.id):
+        await call.answer("Только админ", show_alert=True)
+        return
+    await state.set_state(GenState.waiting_dict_ru)
+    await call.message.answer("Введите русскую фразу")
+    await call.answer()
+
+
+@dp.message(GenState.waiting_dict_ru)
+async def dict_add_ru(message: types.Message, state: FSMContext):
+    await state.update_data(dict_ru=(message.text or "").strip())
+    await state.set_state(GenState.waiting_dict_tags)
+    await message.answer("Введите английские теги")
+
+
+@dp.message(GenState.waiting_dict_tags)
+async def dict_add_tags(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    add_learned_mapping(data.get("dict_ru", ""), parse_english_tags(message.text or ""))
+    await state.clear()
+    await message.answer("✅ Записано.", reply_markup=dictionary_menu())
+
+
+@dp.callback_query(F.data == "dict:export")
+async def cb_dict_export(call: types.CallbackQuery):
+    if not _is_admin(call.from_user.id):
+        await call.answer("Только админ", show_alert=True)
+        return
+    await call.message.answer_document(FSInputFile(DICTIONARY_PATH), caption="learned_dictionary.json")
+    await call.answer()
+
+
+@dp.callback_query(F.data == "dict:import")
+async def cb_dict_import_hint(call: types.CallbackQuery):
+    await call.message.answer("Пришлите JSON файлом и ответьте на него командой /dict_import.")
+    await call.answer()
+
+
+@dp.message(Command("dict_import"))
+async def dict_import_cmd(message: types.Message):
+    if not message.from_user or not _is_admin(message.from_user.id):
+        await message.answer("Только для администратора.")
+        return
+    if not message.reply_to_message or not message.reply_to_message.document:
+        await message.answer("Ответьте командой /dict_import на JSON-документ.")
+        return
+    file = await message.bot.get_file(message.reply_to_message.document.file_id)
+    buf = BytesIO()
+    await message.bot.download_file(file.file_path, destination=buf)
+    try:
+        payload = json.loads(buf.getvalue().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        await message.answer("❌ Некорректный JSON.")
+        return
+    added = _merge_dictionary_payload(payload)
+    await message.answer(f"✅ Импорт завершён. Новых связей: {added}.", reply_markup=dictionary_menu())
+
+
+@dp.callback_query(F.data == "dict:cleanup")
+async def cb_dict_cleanup(call: types.CallbackQuery):
+    if not _is_admin(call.from_user.id):
+        await call.answer("Только админ", show_alert=True)
+        return
+    data = load_learned_dictionary()
+    rejected = set(data["rejected_tags"])
+    data["pending_suggestions"] = [tag for tag in data["pending_suggestions"] if tag not in rejected]
+    save_learned_dictionary(data)
+    await call.message.answer("🧹 Cleanup complete.", reply_markup=dictionary_menu())
     await call.answer()
 
 @dp.message(F.text)
