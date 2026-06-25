@@ -24,7 +24,7 @@ def generation_settings_summary(s) -> str:
 def prompt_preview_text(prompt: str, original: str = "", settings=None, remaining: int | None = None, daily_limit: int = 10) -> str:
     remaining_line = f"\n\nСегодня осталось: {remaining}/{daily_limit}" if remaining is not None else ""
     warning_line = "\n\n⚠️ Проверь перевод." if original and has_unknown_russian(original) else ""
-    settings_line = "\n\n" + generation_settings_summary(settings) if settings else ""
+    settings_line = ""
     if original and original.strip() and original.strip() != prompt.strip():
         return "📝 <b>Промт готов. Запускаем?</b>\n\n<b>Исходник:</b>\n" + f"<code>{html.escape(original[:1400])}</code>\n\n<b>Теговый промт:</b>\n<code>{html.escape(prompt[:3000])}</code>" + warning_line + settings_line + remaining_line
     return "📝 <b>Промт готов. Запускаем?</b>\n\n" + f"<code>{html.escape(prompt[:3000])}</code>" + warning_line + settings_line + remaining_line
