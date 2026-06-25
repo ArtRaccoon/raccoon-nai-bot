@@ -4,11 +4,15 @@ from config_defaults import MODELS, RESOLUTIONS, SAMPLERS, UC_PRESETS, QUICK_PRE
 def rows(buttons, width=2):
     return [buttons[i:i+width] for i in range(0, len(buttons), width)]
 
+def main_menu_button() -> InlineKeyboardButton:
+    return InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main")
+
 def main_menu(channel_url: str = "") -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text="🎨 Новый промт", callback_data="menu:gen"),
         InlineKeyboardButton(text="📎 Img2Img", callback_data="menu:img2img"),
         InlineKeyboardButton(text="⚡ Пресеты", callback_data="menu:presets"),
+        InlineKeyboardButton(text="📘 Инструкция", callback_data="menu:howto"),
         InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"),
         InlineKeyboardButton(text="🔁 Повторить", callback_data="quick:retry"),
         InlineKeyboardButton(text="🕘 История", callback_data="menu:history"),
@@ -51,6 +55,7 @@ def pending_prompt_menu(has_image: bool = False, pro: bool = False, compact: boo
     if not pro:
         buttons.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"))
     buttons.append(InlineKeyboardButton(text="❌ Отмена", callback_data="prompt:cancel"))
+    buttons.append(main_menu_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
 def generation_item_menu(kind: str, index: int) -> InlineKeyboardMarkup:
@@ -62,6 +67,7 @@ def generation_item_menu(kind: str, index: int) -> InlineKeyboardMarkup:
         buttons.insert(1, InlineKeyboardButton(text="⭐ В избранное", callback_data=f"history:fav:{index}"))
     if kind == "fav":
         buttons.insert(1, InlineKeyboardButton(text="🗑 Удалить", callback_data=f"fav:del:{index}"))
+    buttons.append(main_menu_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
 def after_generation_menu() -> InlineKeyboardMarkup:
@@ -70,6 +76,7 @@ def after_generation_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="⭐ В избранное", callback_data="favorite:last"),
         InlineKeyboardButton(text="📝 Показать промт", callback_data="quick:last_prompt"),
         InlineKeyboardButton(text="🌐 NovelAI", url="https://novelai.net/image"),
+        main_menu_button(),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
@@ -79,6 +86,7 @@ def presets_menu() -> InlineKeyboardMarkup:
         buttons.append(InlineKeyboardButton(text=f"▶️ {preset['title']}", callback_data=f"preset:gen:{key}"))
         buttons.append(InlineKeyboardButton(text=f"✍️ {preset['title']}", callback_data=f"preset:show:{key}"))
     buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"))
+    buttons.append(main_menu_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
 def settings_menu(pro: bool = True, show_pro_button: bool = True) -> InlineKeyboardMarkup:
@@ -105,6 +113,7 @@ def settings_menu(pro: bool = True, show_pro_button: bool = True) -> InlineKeybo
     buttons.extend([
         InlineKeyboardButton(text="♻️ Сброс настроек", callback_data="reset:ask"),
         InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"),
+        main_menu_button(),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
@@ -112,32 +121,38 @@ def confirm_reset_menu(kind: str = "settings") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Да, сбросить", callback_data=f"reset:confirm:{kind}")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="reset:cancel")],
+        [main_menu_button()],
     ])
 
 def model_menu() -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(text=name, callback_data=f"set:model:{name}") for name in MODELS]
     buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"))
+    buttons.append(main_menu_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
 def size_menu() -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(text=name, callback_data=f"set:size:{name}") for name in RESOLUTIONS]
     buttons.append(InlineKeyboardButton(text="🔄 Повернуть", callback_data="set:size:swap"))
     buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"))
+    buttons.append(main_menu_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
 def sampler_menu() -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(text=s, callback_data=f"set:sampler:{s}") for s in SAMPLERS]
     buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"))
+    buttons.append(main_menu_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
 def uc_menu() -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(text=name, callback_data=f"set:uc:{name}") for name in UC_PRESETS]
     buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"))
+    buttons.append(main_menu_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
 def noise_menu() -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(text=name, callback_data=f"set:noise:{name}") for name in NOISE_SCHEDULES]
     buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"))
+    buttons.append(main_menu_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
 def seed_menu() -> InlineKeyboardMarkup:
@@ -145,12 +160,14 @@ def seed_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🎲 random", callback_data="set:seed:-1"),
         InlineKeyboardButton(text="✍️ ввести seed", callback_data="settings_input:seed"),
         InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"),
+        main_menu_button(),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
 def samples_menu() -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(text=str(n), callback_data=f"set:n:{n}") for n in (1, 2, 3, 4)]
     buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"))
+    buttons.append(main_menu_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
 def meta_import_menu() -> InlineKeyboardMarkup:
@@ -160,6 +177,7 @@ def meta_import_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🚫 Взять UC/негатив", callback_data="meta:negative"),
         InlineKeyboardButton(text="⚙️ Взять настройки", callback_data="meta:settings"),
         InlineKeyboardButton(text="📦 Взять всё", callback_data="meta:all"),
+        main_menu_button(),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
@@ -169,6 +187,7 @@ def modes_menu(furry: bool, background: bool, quality: bool) -> InlineKeyboardMa
         InlineKeyboardButton(text=f"🌄 Background: {'ON' if background else 'OFF'}", callback_data="toggle:background"),
         InlineKeyboardButton(text=f"✨ Quality tags: {'ON' if quality else 'OFF'}", callback_data="toggle:quality"),
         InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"),
+        main_menu_button(),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
@@ -181,5 +200,6 @@ def artraccoon_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🧪 Тест сборки", callback_data="ar:test"),
         InlineKeyboardButton(text="⚙️ Настройки генерации", callback_data="menu:settings"),
         InlineKeyboardButton(text="❌ Выйти из ArtRaccoon режима", callback_data="ar:exit"),
+        main_menu_button(),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))

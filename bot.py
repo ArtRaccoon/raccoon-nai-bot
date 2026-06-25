@@ -411,6 +411,24 @@ async def show_pending_prompt(message: types.Message, user_id: int) -> None:
         reply_markup=pending_prompt_menu(bool(s.pending_image_path), (s.pro_mode and user_id in ADMIN_IDS) or s.artraccoon_mode, compact=s.artraccoon_mode),
     )
 
+
+def howto_text(user_id: int | None = None) -> str:
+    remaining = remaining_generations(user_id) if user_id is not None else None
+    remaining_line = f"\n\nСегодня осталось: {remaining}/{DAILY_GENERATION_LIMIT}." if remaining is not None else ""
+    return (
+        "📘 <b>Инструкция</b>\n\n"
+        "1. Просто отправь текст с идеей картинки.\n"
+        "2. Бот покажет черновик и настройки.\n"
+        "3. Нажми ✅ Генерировать.\n"
+        "4. Лимит: 10 генераций в сутки.\n"
+        "5. Между генерациями есть пауза 60 секунд.\n"
+        "6. История: /history\n"
+        "7. Избранное: /favorites\n"
+        "8. Настройки: /settings или /xxx\n"
+        "9. PRO-функции временно отключены. 🦝"
+        + remaining_line
+    )
+
 def settings_text(user_id: int) -> str:
     s = get_settings(user_id)
     return (
@@ -503,36 +521,19 @@ async def retry_last_prompt(message: types.Message, actor: types.User | None = N
 @dp.message(Command("start"))
 async def start(message: types.Message):
     get_settings(message.from_user.id)
+    admin_line = "\n\nАдмин-панель и специальные команды доступны как раньше." if message.from_user.id in ADMIN_IDS else ""
     await message.answer(
-        "🦝 <b>NovelAI bot</b>\n\n"
-        "Привет! Я помогу быстро сделать картинку в NovelAI.\n\n"
-        "• 🎨 <b>Новый промт</b> — напиши идею своими словами\n"
-        "• ⚡ <b>Быстрые пресеты</b> — готовые идеи в один тап\n"
-        "• 🔁 <b>Повторить</b> — перегенерировать последний промт\n\n"
-        "Команда тоже работает:\n"
-        "<code>/gen raccoon girl, pink eyes, sketch, ruins</code>\n"
-        "<code>/draw raccoon girl, pink eyes, sketch, ruins</code>",
+        "🦝 <b>Привет! Я NovelAI bot</b>\n\n"
+        "Напиши идею картинки обычным сообщением — я покажу черновик и кнопку генерации.\n"
+        f"Сегодня осталось: <b>{remaining_generations(message.from_user.id)}/{DAILY_GENERATION_LIMIT}</b>."
+        + admin_line,
         reply_markup=main_menu(),
         parse_mode="HTML",
     )
 
-@dp.message(Command("help"))
+@dp.message(Command("help", "howto"))
 async def help_cmd(message: types.Message):
-    await message.answer(
-        "Команды:\n"
-        "/gen prompt — сгенерировать\n"
-        "/draw prompt — сгенерировать\n"
-        "/settings — настройки\n"
-        "/presets — быстрые пресеты\n"
-        "/last_prompt — показать последний промт\n"
-        "/retry — повторить последний промт\n"
-        "/seed random или /seed 123456 — задать seed\n"
-        "/raw — показать настройки\n"
-        "/nai_debug — показать модель и параметры NovelAI\n"
-        "/cancel — отменить ввод промта\n\n"
-        "Можно не писать /gen: отправь обычный текст, я покажу черновик и кнопки подтверждения.\n"
-        "Для img2img: отправь картинку, потом ответь на неё командой /gen prompt."
-    )
+    await message.answer(howto_text(message.from_user.id), reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.message(Command("xxx"))
 async def xxx_cmd(message: types.Message):
@@ -986,18 +987,10 @@ async def cb_gen(call: types.CallbackQuery, state: FSMContext):
     )
     await call.answer()
 
-@dp.callback_query(F.data == "menu:help")
+@dp.callback_query(F.data.in_({"menu:help", "menu:howto"}))
 async def cb_help(call: types.CallbackQuery):
     await call.message.edit_text(
-        "❔ <b>Помощь</b>\n\n"
-        "• /gen prompt и /draw prompt — генерация\n"
-        "• /presets — готовые промты\n"
-        "• /last_prompt — показать последний промт\n"
-        "• /retry — повторить последний промт\n"
-        "• /seed random или /seed 123456 — seed\n"
-        "• /settings — меню настроек\n"
-        "• reply на фото + /gen prompt — img2img\n\n"
-        "Подсказка: если результат почти понравился, задай фиксированный seed и меняй промт маленькими шагами.",
+        howto_text(call.from_user.id),
         reply_markup=main_menu(),
         parse_mode="HTML",
     )
@@ -1118,7 +1111,7 @@ async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMIN_IDS and field in {"n", "sampler", "uc", "cfg", "noise", "img2img", "modes"}:
         patch_settings(call.from_user.id, pro_mode=False, n_samples=1)
         await call.answer("💎 Эта функция временно отключена.", show_alert=True)
-        await call.message.answer("💎 Эта функция временно отключена.")
+        await call.message.answer("💎 Эта функция временно отключена.", reply_markup=main_menu())
         return
     if field == "model":
         await call.message.edit_text("🧠 Выбери модель:", reply_markup=model_menu())
@@ -1635,7 +1628,7 @@ async def setting_text_input(message: types.Message, state: FSMContext):
     field = data.get("setting_field", "")
     updates, response = parse_setting_value(message.from_user.id, field, message.text or "")
     if updates is None:
-        await message.answer("😅 " + response + "\n\n" + SETTING_PROMPTS.get(field, ""), parse_mode="HTML")
+        await message.answer("😅 " + response + "\n\n" + SETTING_PROMPTS.get(field, ""), parse_mode="HTML", reply_markup=main_menu())
         return
     await state.clear()
     patch_settings(message.from_user.id, **updates)
@@ -1647,7 +1640,7 @@ async def gen_from_button(message: types.Message, state: FSMContext):
     prompt = message.text.strip() if message.text else ""
 
     if not prompt:
-        await message.answer("Пришли текстовый промт или нажми /cancel.")
+        await message.answer("Пришли текстовый промт или нажми /cancel.", reply_markup=main_menu())
         return
 
     await state.clear()
@@ -1818,7 +1811,7 @@ async def toggle_pro(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
         patch_settings(call.from_user.id, pro_mode=False)
         await call.answer("💎 Эта функция временно отключена.", show_alert=True)
-        await call.message.answer("💎 Эта функция временно отключена.")
+        await call.message.answer("💎 Эта функция временно отключена.", reply_markup=main_menu())
         return
     s = get_settings(call.from_user.id)
     new_value = not s.pro_mode
