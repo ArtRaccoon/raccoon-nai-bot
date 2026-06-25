@@ -6,6 +6,7 @@ from config_defaults import UserSettings
 
 DATA_DIR = Path("data")
 USERS_FILE = DATA_DIR / "users.json"
+CONFIG_FILE = DATA_DIR / "config.json"
 _STORAGE_LOCK = threading.RLock()
 
 
@@ -159,3 +160,32 @@ def get_last_payload(user_id: int) -> dict:
     with _STORAGE_LOCK:
         payload = _load_all_unlocked().get(str(user_id), {}).get("last_nai_payload", {})
         return payload if isinstance(payload, dict) else {}
+
+
+def _load_config_unlocked() -> dict:
+    DATA_DIR.mkdir(exist_ok=True)
+    if not CONFIG_FILE.exists():
+        CONFIG_FILE.write_text("{}", encoding="utf-8")
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def get_config_value(key: str, default=None):
+    with _STORAGE_LOCK:
+        return _load_config_unlocked().get(key, default)
+
+
+def set_config_value(key: str, value) -> None:
+    with _STORAGE_LOCK:
+        data = _load_config_unlocked()
+        data[key] = value
+        tmp = CONFIG_FILE.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(CONFIG_FILE)

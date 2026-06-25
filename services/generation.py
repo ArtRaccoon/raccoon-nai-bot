@@ -43,7 +43,9 @@ def today_key() -> str:
 
 
 def daily_count_for(s) -> int:
-    return int(s.daily_generation_count or 0) if s.daily_generation_date == today_key() else 0
+    legacy = int(s.daily_generation_count or 0) if s.daily_generation_date == today_key() else 0
+    current = int(s.free_daily_used or 0) if s.free_daily_date == today_key() else 0
+    return max(legacy, current)
 
 
 def remaining_generations(user_id: int, admin_ids: list[int]) -> int | None:
@@ -56,7 +58,9 @@ def mark_generation_started(user_id: int, admin_ids: list[int]) -> None:
     s = get_settings(user_id)
     updates = {"last_generation_started_at": datetime.now(timezone.utc).isoformat()}
     if user_id not in admin_ids:
-        updates.update({"daily_generation_date": today_key(), "daily_generation_count": daily_count_for(s) + 1})
+        used = daily_count_for(s) + 1
+        updates.update({"daily_generation_date": today_key(), "daily_generation_count": used, "free_daily_date": today_key(), "free_daily_used": used})
+    updates["total_generations_used"] = int(s.total_generations_used or 0) + 1
     patch_settings(user_id, **updates)
 
 
@@ -78,14 +82,7 @@ def apply_anlas_safe_defaults(user_id: int, admin_ids: list[int]):
     s = get_settings(user_id)
     if s.pro_mode and user_id in admin_ids:
         return s
-    updates = {}
-    if s.n_samples != 1:
-        updates["n_samples"] = 1
-    if s.steps > 28:
-        updates["steps"] = 28
-    if (s.width, s.height) not in SAFE_RESOLUTIONS:
-        updates.update({"width": 832, "height": 1216})
-    return patch_settings(user_id, **updates) if updates else s
+    return patch_settings(user_id, **safe_generation_defaults())
 
 
 def safe_generated_image_path(user_id: int, timestamp: str, idx: int) -> Path:

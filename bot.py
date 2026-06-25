@@ -33,7 +33,7 @@ from prompt_tools import (
 from storage import (
     get_settings, save_settings, patch_settings, add_history, get_history,
     add_favorite, get_favorites, delete_favorite, set_last_metadata, get_last_metadata,
-    set_last_payload, get_last_payload
+    set_last_payload, get_last_payload, get_config_value, set_config_value
 )
 
 from services.generation import (
@@ -88,6 +88,23 @@ def cooldown_remaining(user_id: int) -> int:
 def apply_anlas_safe_defaults(user_id: int):
     return _apply_anlas_safe_defaults(user_id, ADMIN_IDS)
 
+
+def is_advanced_user(user_id: int) -> bool:
+    s = get_settings(user_id)
+    return user_id in ADMIN_IDS and (s.pro_mode or s.artraccoon_mode)
+
+
+def artraccoon_vibe_prompt() -> str:
+    return str(get_config_value("artraccoon_vibe_prompt", "") or "").strip()
+
+
+def visible_prompt_with_optional_vibe(user_id: int, visible_prompt: str) -> tuple[str, bool]:
+    s = get_settings(user_id)
+    vibe = artraccoon_vibe_prompt()
+    if s.artraccoon_vibe_enabled and vibe:
+        return f"{vibe}, {visible_prompt}" if visible_prompt.strip() else vibe, True
+    return visible_prompt, False
+
 class GenState(StatesGroup):
     waiting_prompt = State()
     waiting_ar_base = State()
@@ -97,11 +114,13 @@ class GenState(StatesGroup):
     waiting_dict_ru = State()
     waiting_dict_tags = State()
     waiting_dict_review_ru = State()
+    waiting_ar_vibe = State()
 
 def main_menu():
     return base_main_menu(CHANNEL_URL)
 
-ANLAS_WARNING = "💎 Эта функция временно отключена."
+PAID_PLACEHOLDER = "Функция доступна в платном режиме. Скоро добавим."
+ANLAS_WARNING = PAID_PLACEHOLDER
 generation_lock = asyncio.Lock()
 generation_waiting = 0
 moderation_candidates: dict[str, list[str]] = {}
@@ -171,10 +190,12 @@ def moderation_summary(user: types.User, original_prompt: str, final_prompt: str
         f"{candidates_block}"
     )
 
-async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: str, final_prompt: str, s, candidates: list[str] | None = None) -> None:
+async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: str, final_prompt: str, s, candidates: list[str] | None = None, hidden_vibe_applied: bool = False) -> None:
     if user.id in ADMIN_IDS:
         return
     text = moderation_summary(user, original_prompt, final_prompt, s, candidates)
+    if hidden_vibe_applied:
+        text += "\n\n<blockquote expandable>🦝 Hidden ArtRaccoon vibe applied</blockquote>"
     token = f"{user.id}:{int(datetime.now(timezone.utc).timestamp())}"
     if candidates:
         moderation_candidates[token] = list(dict.fromkeys(candidates))
@@ -185,10 +206,12 @@ async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: 
         except Exception:
             log.exception("Failed to send moderation prompt summary to admin %s", admin_id)
 
-async def send_moderation_image(bot_obj: Bot, user: types.User, img: bytes, original_prompt: str, final_prompt: str, s, idx: int, candidates: list[str] | None = None) -> None:
+async def send_moderation_image(bot_obj: Bot, user: types.User, img: bytes, original_prompt: str, final_prompt: str, s, idx: int, candidates: list[str] | None = None, hidden_vibe_applied: bool = False) -> None:
     if user.id in ADMIN_IDS:
         return
     caption = f"🛡 <b>Готовое изображение</b>\n👤 <code>{html.escape(user_label(user))}</code>\n📐 <code>{s.width}x{s.height}</code> · 🎲 <code>{'random' if s.seed == -1 else s.seed}</code>"
+    if hidden_vibe_applied:
+        caption += "\n<blockquote expandable>🦝 Hidden ArtRaccoon vibe applied</blockquote>"
     if candidates:
         caption += "\n\n📚 <b>Dictionary candidates</b>\n" + "\n".join(f"• {html.escape(tag)}" for tag in candidates[:20])
     for admin_id in ADMIN_IDS:
@@ -211,7 +234,7 @@ async def show_pending_prompt(message: types.Message, user_id: int) -> None:
     await message.answer(
         preview,
         parse_mode="HTML",
-        reply_markup=pending_prompt_menu(bool(s.pending_image_path), (s.pro_mode and user_id in ADMIN_IDS) or s.artraccoon_mode, compact=s.artraccoon_mode),
+        reply_markup=pending_prompt_menu(bool(s.pending_image_path), is_advanced_user(user_id), compact=s.artraccoon_mode, vibe_enabled=s.artraccoon_vibe_enabled, vibe_available=bool(artraccoon_vibe_prompt())),
     )
 
 
@@ -221,14 +244,11 @@ def howto_text(user_id: int | None = None) -> str:
     return (
         "📘 <b>Инструкция</b>\n\n"
         "1. Просто отправь текст с идеей картинки.\n"
-        "2. Бот покажет черновик и настройки.\n"
+        "2. Бот покажет черновик и кнопку генерации.\n"
         "3. Нажми ✅ Генерировать.\n"
         "4. Лимит: 10 генераций в сутки.\n"
         "5. Между генерациями есть пауза 60 секунд.\n"
-        "6. История: /history\n"
-        "7. Избранное: /favorites\n"
-        "8. Настройки: /settings или /xxx\n"
-        "9. PRO-функции временно отключены. 🦝"
+        "6. Расширенные функции появятся в платном режиме. 🦝"
         + remaining_line
     )
 
@@ -259,10 +279,10 @@ def settings_text(user_id: int) -> str:
 
 def settings_markup_for(user_id: int):
     s = get_settings(user_id)
-    return settings_menu((s.pro_mode and user_id in ADMIN_IDS) or s.artraccoon_mode, show_pro_button=user_id in ADMIN_IDS)
+    return settings_menu(is_advanced_user(user_id), show_pro_button=user_id in ADMIN_IDS)
 
 def prompt_menu_for(s, user_id: int):
-    return pending_prompt_menu(bool(s.pending_image_path), (s.pro_mode and user_id in ADMIN_IDS) or s.artraccoon_mode, compact=s.artraccoon_mode)
+    return pending_prompt_menu(bool(s.pending_image_path), is_advanced_user(user_id), compact=s.artraccoon_mode, vibe_enabled=s.artraccoon_vibe_enabled, vibe_available=bool(artraccoon_vibe_prompt()))
 
 def prepare_prompt_for_user(user_id: int, text: str, force_tags: bool = False) -> tuple[str, str]:
     s = get_settings(user_id)
@@ -389,6 +409,43 @@ async def pro_cmd(message: types.Message):
     patch_settings(message.from_user.id, pro_mode=not s.pro_mode)
     s = get_settings(message.from_user.id)
     await message.answer("💎 PRO режим включён. Расширенные функции могут тратить Anlas." if s.pro_mode else "✅ Обычный режим включён. Дорогие функции скрыты.", reply_markup=settings_markup_for(message.from_user.id))
+
+
+@dp.message(Command("set_artraccoon_vibe"))
+async def set_artraccoon_vibe_cmd(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Команда не найдена.")
+        return
+    await state.set_state(GenState.waiting_ar_vibe)
+    await message.answer("Пришли скрытый ArtRaccoon vibe prompt.")
+
+
+@dp.message(Command("show_artraccoon_vibe"))
+async def show_artraccoon_vibe_cmd(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Команда не найдена.")
+        return
+    await message.answer(f"🦝 <b>ArtRaccoon vibe</b>\n<blockquote expandable>{html.escape(artraccoon_vibe_prompt() or '—')}</blockquote>", parse_mode="HTML")
+
+
+@dp.message(Command("clear_artraccoon_vibe"))
+async def clear_artraccoon_vibe_cmd(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Команда не найдена.")
+        return
+    set_config_value("artraccoon_vibe_prompt", "")
+    await message.answer("✅ ArtRaccoon vibe очищен.")
+
+
+@dp.message(GenState.waiting_ar_vibe)
+async def save_artraccoon_vibe(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        await message.answer("Команда не найдена.")
+        return
+    set_config_value("artraccoon_vibe_prompt", (message.text or "").strip())
+    await state.clear()
+    await message.answer("✅ ArtRaccoon vibe сохранён.")
 
 @dp.message(Command("ArtRaccoonoff"))
 async def artraccoon_off_cmd(message: types.Message):
@@ -620,10 +677,12 @@ async def generate_image_from_prompt(
     s = patch_settings(user_id, last_prompt=prompt)
     s = apply_anlas_safe_defaults(user_id)
     original_prompt = s.pending_original_prompt or prompt
+    visible_prompt = prompt
+    generation_prompt, hidden_vibe_applied = visible_prompt_with_optional_vibe(user_id, visible_prompt)
     try:
-        final_prompt = nai.build_prompt(prompt, s)
+        final_prompt = nai.build_prompt(generation_prompt, s)
     except Exception:
-        final_prompt = prompt
+        final_prompt = generation_prompt
 
     global generation_waiting
     if generation_lock.locked() or generation_waiting:
@@ -648,11 +707,11 @@ async def generate_image_from_prompt(
         async with generation_lock:
             generation_waiting = max(0, generation_waiting - 1)
             mark_generation_started(user_id)
-            candidates = learn_from_english_prompt(prompt) if looks_like_english_tags(prompt) else []
-            await send_moderation_copy(message.bot, user, original_prompt, final_prompt, s, candidates)
+            candidates = learn_from_english_prompt(visible_prompt) if looks_like_english_tags(visible_prompt) else []
+            await send_moderation_copy(message.bot, user, original_prompt, final_prompt, s, candidates, hidden_vibe_applied)
             images = await asyncio.wait_for(
                 nai.generate(
-                    prompt,
+                    generation_prompt,
                     s,
                     image_bytes=image_bytes,
                     on_character_payload_fallback=show_character_payload_fallback,
@@ -663,9 +722,9 @@ async def generate_image_from_prompt(
         timestamp = datetime.now(timezone.utc).isoformat()
         saved_images = save_generated_images(user_id, timestamp, images)
         history_item = {
-            "prompt": prompt,
+            "prompt": visible_prompt,
             "original_prompt": original_prompt,
-            "final_prompt": final_prompt,
+            "final_prompt": visible_prompt,
             "negative_prompt": s.negative_prompt,
             "seed": s.seed,
             "model": s.model_name,
@@ -676,7 +735,7 @@ async def generate_image_from_prompt(
         }
         add_history(user_id, history_item)
         set_last_metadata(user_id, history_item)
-        patch_settings(user_id, pending_image_path="")
+        patch_settings(user_id, pending_image_path="", pending_prompt="", pending_original_prompt="", prompt_action="")
         await wait.delete()
 
         for idx, img in enumerate(images, start=1):
@@ -684,7 +743,7 @@ async def generate_image_from_prompt(
             image = BufferedInputFile(img, filename=name)
             caption = f"✅ <b>Готово</b>\\nSeed: <code>{s.seed}</code>\\nРазмер: <code>{s.width}x{s.height}</code>"
             try:
-                await send_moderation_image(message.bot, user, img, original_prompt, final_prompt, s, idx, candidates)
+                await send_moderation_image(message.bot, user, img, original_prompt, final_prompt, s, idx, candidates, hidden_vibe_applied)
                 await message.answer_photo(
                     image,
                     caption=caption,
@@ -801,6 +860,10 @@ async def cb_main(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "menu:settings")
 async def cb_settings(call: types.CallbackQuery):
+    if not is_advanced_user(call.from_user.id):
+        await call.message.edit_text(PAID_PLACEHOLDER, reply_markup=main_menu())
+        await call.answer()
+        return
     await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
     await call.answer()
 
@@ -907,6 +970,17 @@ async def cb_last_prompt(call: types.CallbackQuery):
     await send_last_prompt(call.message, actor=call.from_user)
     await call.answer()
 
+
+@dp.callback_query(F.data == "quick:edit_prompt")
+async def cb_edit_last_prompt(call: types.CallbackQuery):
+    s = get_settings(call.from_user.id)
+    if not s.last_prompt:
+        await call.answer("Пока нечего изменить", show_alert=True)
+        return
+    patch_settings(call.from_user.id, pending_prompt=s.last_prompt, pending_original_prompt=s.last_prompt, prompt_action="replace")
+    await call.message.answer("✏️ Пришли обновлённый промпт — я заменю текущий и покажу черновик.")
+    await call.answer()
+
 @dp.callback_query(F.data == "quick:retry")
 async def cb_retry(call: types.CallbackQuery):
     await call.answer("Повторяю")
@@ -937,7 +1011,7 @@ async def cb_prompt_confirm(call: types.CallbackQuery):
         await call.answer("Черновик пуст", show_alert=True)
         await call.message.answer("📝 Черновик пуст. Пришли новый промт обычным сообщением.", reply_markup=main_menu())
         return
-    patch_settings(call.from_user.id, pending_prompt="", pending_original_prompt="", prompt_action="")
+    patch_settings(call.from_user.id, prompt_action="")
     await call.answer("Запускаю генерацию")
     await call.message.answer("✅ Отлично, запускаю генерацию по черновику.")
     await generate_image_from_prompt(call.message, prompt, actor=call.from_user)
@@ -954,7 +1028,33 @@ async def cb_prompt_append(call: types.CallbackQuery):
 @dp.callback_query(F.data == "prompt:replace")
 async def cb_prompt_replace(call: types.CallbackQuery):
     patch_settings(call.from_user.id, prompt_action="replace")
-    await call.message.answer("🔁 Хорошо, пришли новый промт — я заменю текущий черновик.")
+    await call.message.answer("✏️ Пришли обновлённый промпт — я заменю текущий черновик.")
+    await call.answer()
+
+
+@dp.callback_query(F.data == "prompt:clear")
+async def cb_prompt_clear(call: types.CallbackQuery):
+    patch_settings(call.from_user.id, pending_prompt="", pending_original_prompt="", prompt_action="")
+    await call.message.answer("🧹 Черновик очищен. Пришли новый промпт обычным сообщением.", reply_markup=main_menu())
+    await call.answer("Очищено")
+
+
+@dp.callback_query(F.data == "prompt:ar_vibe")
+async def cb_prompt_ar_vibe(call: types.CallbackQuery):
+    vibe = artraccoon_vibe_prompt()
+    if not vibe:
+        patch_settings(call.from_user.id, artraccoon_vibe_enabled=False)
+        await call.answer("ArtRaccoon vibe ещё не задан.", show_alert=True)
+        return
+    s = get_settings(call.from_user.id)
+    s = patch_settings(call.from_user.id, artraccoon_vibe_enabled=not s.artraccoon_vibe_enabled)
+    await call.message.edit_reply_markup(reply_markup=prompt_menu_for(s, call.from_user.id))
+    await call.answer(f"ArtRaccoon vibe: {'ON' if s.artraccoon_vibe_enabled else 'OFF'}")
+
+
+@dp.callback_query(F.data.startswith("paid:"))
+async def cb_paid_placeholder(call: types.CallbackQuery):
+    await call.message.answer(PAID_PLACEHOLDER, reply_markup=main_menu())
     await call.answer()
 
 @dp.callback_query(F.data == "prompt:cancel")
@@ -968,10 +1068,10 @@ async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):
     field = call.data.split(":", 1)[1]
     s = get_settings(call.from_user.id)
     advanced = (s.pro_mode and call.from_user.id in ADMIN_IDS) or s.artraccoon_mode
-    if call.from_user.id not in ADMIN_IDS and field in {"n", "sampler", "uc", "cfg", "noise", "img2img", "modes"}:
+    if not is_advanced_user(call.from_user.id):
         patch_settings(call.from_user.id, pro_mode=False, n_samples=1)
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
-        await call.message.answer("💎 Эта функция временно отключена.", reply_markup=main_menu())
+        await call.answer(PAID_PLACEHOLDER, show_alert=True)
+        await call.message.answer(PAID_PLACEHOLDER, reply_markup=main_menu())
         return
     if field == "model":
         await call.message.edit_text("🧠 Выбери модель:", reply_markup=model_menu())

@@ -9,29 +9,20 @@ def main_menu_button() -> InlineKeyboardButton:
 
 def main_menu(channel_url: str = "") -> InlineKeyboardMarkup:
     buttons = [
-        InlineKeyboardButton(text="🎨 Новый промт", callback_data="menu:gen"),
-        InlineKeyboardButton(text="📎 Img2Img", callback_data="menu:img2img"),
-        InlineKeyboardButton(text="⚡ Пресеты", callback_data="menu:presets"),
-        InlineKeyboardButton(text="📘 Инструкция", callback_data="menu:howto"),
-        InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"),
-        InlineKeyboardButton(text="🔁 Повторить", callback_data="quick:retry"),
-        InlineKeyboardButton(text="🕘 История", callback_data="menu:history"),
-        InlineKeyboardButton(text="⭐ Избранное", callback_data="menu:favorites"),
-        InlineKeyboardButton(text="🩹 Инпейнт", callback_data="menu:inpaint"),
-        InlineKeyboardButton(text="🧬 Референс / вайб", callback_data="menu:reference"),
-        InlineKeyboardButton(text="🔍 Апскейл", callback_data="menu:upscale"),
-        InlineKeyboardButton(text="🌐 NovelAI", url="https://novelai.net/image"),
+        InlineKeyboardButton(text="🎨 Новый промпт", callback_data="menu:gen"),
+        InlineKeyboardButton(text="💎 Купить генерации", callback_data="paid:buy"),
+        InlineKeyboardButton(text="❓ Помощь", callback_data="menu:howto"),
     ]
     if channel_url:
         buttons.append(InlineKeyboardButton(text="📢 Канал", url=channel_url))
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
-def pending_prompt_menu(has_image: bool = False, pro: bool = False, compact: bool = False) -> InlineKeyboardMarkup:
+def pending_prompt_menu(has_image: bool = False, pro: bool = False, compact: bool = False, vibe_enabled: bool = False, vibe_available: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text="✅ Генерировать", callback_data="prompt:confirm"),
-        InlineKeyboardButton(text="✏️ Дописать", callback_data="prompt:append"),
-        InlineKeyboardButton(text="🔁 Заменить", callback_data="prompt:replace"),
-        InlineKeyboardButton(text="🇬🇧 В теги", callback_data="tool:translate"),
+        InlineKeyboardButton(text="✏️ Редактировать", callback_data="prompt:replace"),
+        InlineKeyboardButton(text="🧹 Очистить", callback_data="prompt:clear"),
+        InlineKeyboardButton(text=f"🦝 ArtRaccoon vibe: {'ON' if vibe_enabled and vibe_available else 'OFF'}", callback_data="prompt:ar_vibe"),
     ]
     if pro and not compact:
         buttons.extend([
@@ -52,9 +43,9 @@ def pending_prompt_menu(has_image: bool = False, pro: bool = False, compact: boo
             InlineKeyboardButton(text="🦝 Добавить Аэлиту", callback_data="tool:aelita"),
             InlineKeyboardButton(text="📎 Img2Img" + (" ✅" if has_image else ""), callback_data="menu:img2img"),
         ])
-    if not pro:
-        buttons.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"))
     buttons.append(InlineKeyboardButton(text="❌ Отмена", callback_data="prompt:cancel"))
+    if pro:
+        buttons.append(InlineKeyboardButton(text="⚙️ Расширенные настройки", callback_data="paid:settings"))
     buttons.append(main_menu_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
@@ -73,9 +64,9 @@ def generation_item_menu(kind: str, index: int) -> InlineKeyboardMarkup:
 def after_generation_menu() -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text="🔁 Повторить", callback_data="quick:retry"),
-        InlineKeyboardButton(text="⭐ В избранное", callback_data="favorite:last"),
-        InlineKeyboardButton(text="📝 Показать промт", callback_data="quick:last_prompt"),
-        InlineKeyboardButton(text="🌐 NovelAI", url="https://novelai.net/image"),
+        InlineKeyboardButton(text="✏️ Изменить промпт", callback_data="quick:edit_prompt"),
+        InlineKeyboardButton(text="🌊 Свайп / вариация", callback_data="paid:variation"),
+        InlineKeyboardButton(text="⬆️ Up", callback_data="paid:upscale"),
         main_menu_button(),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
