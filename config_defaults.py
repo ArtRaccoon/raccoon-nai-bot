@@ -130,7 +130,7 @@ class UserSettings:
     smea: bool = False
     smea_dyn: bool = False
     cfg_rescale: float = 0.0
-    variety_plus: bool = False
+    variety_plus: bool = True
     nai_site_mode: bool = False
 
     def to_dict(self) -> dict:
