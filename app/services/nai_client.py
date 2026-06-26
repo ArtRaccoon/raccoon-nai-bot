@@ -163,9 +163,9 @@ class NovelAIClient:
             "sampler": settings.sampler,
             "steps": settings.steps,
             "n_samples": settings.n_samples,
-            "ucPreset": 0,
+            "ucPreset": settings.uc_preset_id,
             "qualityToggle": settings.add_quality_tags,
-            "dynamic_thresholding": False,
+            "dynamic_thresholding": settings.dynamic_thresholding,
             "variety_plus": settings.variety_plus,
             "cfg_rescale": settings.cfg_rescale,
             "noise_schedule": settings.noise_schedule,
@@ -183,25 +183,33 @@ class NovelAIClient:
                     "base_caption": built_prompt,
                     "char_captions": char_captions,
                 },
-                "use_coords": False,
-                "use_order": True,
+                "use_coords": settings.use_coords,
+                "use_order": settings.use_order,
             }
             parameters["v4_negative_prompt"] = {
                 "caption": {
                     "base_caption": uc,
                     "char_captions": negative_char_captions,
                 },
-                "use_coords": False,
+                "use_coords": settings.use_coords,
                 "use_order": False,
-                "legacy_uc": False,
+                "legacy_uc": settings.legacy_uc,
             }
+            if settings.character_captions is not None:
+                parameters["v4_prompt"]["caption"]["char_captions"] = settings.character_captions
+            if settings.negative_character_captions is not None:
+                parameters["v4_negative_prompt"]["caption"]["char_captions"] = settings.negative_character_captions
+            if settings.v4_prompt is not None:
+                parameters["v4_prompt"] = settings.v4_prompt
+            if settings.v4_negative_prompt is not None:
+                parameters["v4_negative_prompt"] = settings.v4_negative_prompt
         else:
             parameters["sm"] = settings.smea
             parameters["sm_dyn"] = settings.smea_dyn
         if settings.seed != -1:
             parameters["seed"] = settings.seed
 
-        action = "generate"
+        action = settings.nai_action or "generate"
         if image_b64:
             action = "img2img"
             parameters.update({

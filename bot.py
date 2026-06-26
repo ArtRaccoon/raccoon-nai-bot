@@ -21,7 +21,7 @@ from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRE
 from keyboards import (
     main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
     after_generation_menu, generation_item_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu, moderation_dictionary_menu, dictionary_menu, dictionary_pending_menu, admin_panel_menu,
-    admin_ar_vibe_menu, admin_nai_debug_menu, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu,
+    admin_ar_vibe_menu, admin_nai_debug_menu, admin_site_clone_menu, registry_fields_text, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu,
 )
 from app.services.nai_client import (
     NovelAIClient, NovelAIError, sanitize_payload,
@@ -48,6 +48,7 @@ from services.generation import (
 from services.metadata import (
     metadata_settings_summary, metadata_summary, nai_compare_summary_text, parse_nai_metadata,
 )
+from app.nai.settings_registry import settings_updates_from_metadata
 from ui.texts import (
     CANCEL_TEXT, CLEAR_TEXT, DAILY_LIMIT_TEXT, EDIT_PROMPT_TEXT, GENERATION_STARTED_TEXT,
     PAID_PLACEHOLDER_TEXT, PROMPT_EMPTY_TEXT, cooldown_text, generation_result_caption,
@@ -1299,6 +1300,21 @@ async def cb_admin_nai(call: types.CallbackQuery):
         payload = sanitize_payload(get_last_payload(call.from_user.id))
         text = "📭 Last NovelAI metadata не сохранена. Ответь /meta на файл с metadata NovelAI." if not meta else ("📭 Last bot payload не сохранён. Сгенерируй изображение или используй /nai_payload для preview." if not payload else nai_compare_summary_text(meta, payload))
         await call.message.answer(text, parse_mode="HTML", reply_markup=admin_nai_debug_menu())
+    elif action == "site_clone":
+        await call.message.answer("🌐 <b>Admin/Site Clone mode</b>", parse_mode="HTML", reply_markup=admin_site_clone_menu())
+    elif action == "site_fields":
+        await call.message.answer("🌐 <b>Supported NovelAI website fields</b>\n<pre>" + html.escape(registry_fields_text(admin=True)) + "</pre>", parse_mode="HTML", reply_markup=admin_site_clone_menu())
+    elif action == "apply_meta_settings":
+        meta = get_last_metadata(call.from_user.id)
+        if not meta:
+            await call.answer("Metadata не найдена", show_alert=True)
+            return
+        updates = metadata_settings_updates(meta)
+        if not updates:
+            await call.answer("В metadata нет известных website settings", show_alert=True)
+            return
+        patch_settings(call.from_user.id, **updates)
+        await call.message.answer("✅ Website settings применены из metadata.", reply_markup=admin_site_clone_menu())
     await call.answer()
 
 @dp.callback_query(F.data.startswith("basic_defaults:"))
@@ -2125,39 +2141,9 @@ async def cb_prompt_tool(call: types.CallbackQuery):
     await call.answer("Промт обновлён")
 
 def metadata_settings_updates(meta: dict) -> dict:
-    updates = {}
-    for key, target, cast in [
-        ("width", "width", int), ("height", "height", int), ("steps", "steps", int),
-        ("scale", "scale", float), ("cfg_rescale", "cfg_rescale", float), ("seed", "seed", int),
-    ]:
-        if key in meta:
-            try:
-                updates[target] = cast(meta[key])
-            except (ValueError, TypeError):
-                pass
-    if str(meta.get("sampler", "")) in SAMPLERS:
-        updates["sampler"] = str(meta["sampler"])
-    if str(meta.get("uc_preset", "")) in UC_PRESETS:
-        updates["uc_preset"] = str(meta["uc_preset"])
-    if str(meta.get("noise_schedule", "")) in NOISE_SCHEDULES:
-        updates["noise_schedule"] = str(meta["noise_schedule"])
-    for key, target, cast in [
-        ("qualityToggle", "add_quality_tags", lambda value: str(value).strip().lower() == "true" if isinstance(value, str) else bool(value)),
-        ("variety_plus", "variety_plus", lambda value: str(value).strip().lower() == "true" if isinstance(value, str) else bool(value)),
-        ("n_samples", "n_samples", int),
-    ]:
-        if key in meta:
-            try:
-                updates[target] = cast(meta[key])
-            except (ValueError, TypeError):
-                pass
-    for name, value in MODELS.items():
-        if meta.get("model") in (name, value):
-            updates["model_name"] = name
-            break
-    if meta.get("negative_prompt"):
-        updates["negative_prompt"] = str(meta["negative_prompt"])
-    return updates
+    # Admin/site-clone import intentionally uses the full registry. Basic mode
+    # remains limited elsewhere by safe_generation_defaults/sanitize_basic_defaults.
+    return settings_updates_from_metadata(meta, include_admin=True)
 
 @dp.callback_query(F.data.startswith("meta:"))
 async def cb_meta_apply(call: types.CallbackQuery):
