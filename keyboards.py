@@ -1,5 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config_defaults import MODELS, RESOLUTIONS, SAMPLERS, UC_PRESETS, QUICK_PRESETS, NOISE_SCHEDULES
+from app.nai.settings_registry import ADMIN_SITE_CLONE_FIELDS, BASIC_MENU_FIELDS
 
 def rows(buttons, width=2):
     return [buttons[i:i+width] for i in range(0, len(buttons), width)]
@@ -116,6 +117,7 @@ def confirm_reset_menu(kind: str = "settings") -> InlineKeyboardMarkup:
     ])
 
 def model_menu() -> InlineKeyboardMarkup:
+    # Values come from the registry-backed model catalog while preserving existing UX.
     buttons = [InlineKeyboardButton(text=name, callback_data=f"set:model:{name}") for name in MODELS]
     buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"))
     buttons.append(main_menu_button())
@@ -258,6 +260,7 @@ def admin_nai_debug_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🧾 Payload summary", callback_data="admin_nai:summary"),
         InlineKeyboardButton(text="📦 Full payload", callback_data="admin_nai:full"),
         InlineKeyboardButton(text="🔍 Compare site mode", callback_data="admin_nai:compare"),
+        InlineKeyboardButton(text="🌐 Site Clone settings", callback_data="admin_nai:site_clone"),
         InlineKeyboardButton(text="🏠 Назад", callback_data="admin:menu"),
         admin_back_button(),
     ]
@@ -305,3 +308,19 @@ def admin_broadcast_confirm_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_broadcast:cancel")],
         [admin_back_button()],
     ])
+
+
+def admin_site_clone_menu() -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(text="📋 Supported website fields", callback_data="admin_nai:site_fields"),
+        InlineKeyboardButton(text="⚙️ Apply last metadata settings", callback_data="admin_nai:apply_meta_settings"),
+        InlineKeyboardButton(text="🔍 Compare website vs bot", callback_data="admin_nai:compare"),
+        InlineKeyboardButton(text="🏠 Назад", callback_data="admin:nai_debug"),
+        admin_back_button(),
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
+
+
+def registry_fields_text(admin: bool = False) -> str:
+    fields = ADMIN_SITE_CLONE_FIELDS if admin else BASIC_MENU_FIELDS
+    return "\n".join(f"• {field.key} → {field.payload_path}" for field in fields)

@@ -111,6 +111,8 @@ class UserSettings:
     furry_mode: bool = False
     background_mode: bool = False
     add_quality_tags: bool = True
+    uc_preset_id: int = 0
+    dynamic_thresholding: bool = False
     last_prompt: str = ""
     pending_prompt: str = ""
     pending_original_prompt: str = ""
@@ -137,6 +139,17 @@ class UserSettings:
     cfg_rescale: float = 0.0
     variety_plus: bool = True
     nai_site_mode: bool = False
+    use_coords: bool = False
+    use_order: bool = True
+    legacy_uc: bool = False
+    v4_prompt: dict | None = None
+    v4_negative_prompt: dict | None = None
+    character_captions: list | None = None
+    negative_character_captions: list | None = None
+    infill_mask: str = ""
+    nai_action: str = ""
+    upscale_action: bool = False
+    variation_action: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
