@@ -12,11 +12,11 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, FSInputFile
+from aiogram.types import BufferedInputFile, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.client.session.aiohttp import AiohttpSession
 from dotenv import load_dotenv
 
-from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRESETS, NOISE_SCHEDULES, AELITA_DESCRIPTION
+from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRESETS, NOISE_SCHEDULES, AELITA_DESCRIPTION, UserSettings
 from keyboards import (
     main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
     after_generation_menu, generation_item_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu, moderation_dictionary_menu, dictionary_menu, dictionary_pending_menu
@@ -33,14 +33,14 @@ from prompt_tools import (
 from storage import (
     get_settings, save_settings, patch_settings, add_history, get_history,
     add_favorite, get_favorites, delete_favorite, set_last_metadata, get_last_metadata,
-    set_last_payload, get_last_payload, get_config_value, set_config_value
+    set_last_payload, get_last_payload, get_config_value, set_config_value, delete_config_value
 )
 
 from services.generation import (
     DAILY_GENERATION_LIMIT, GENERATION_TIMEOUT_SECONDS, SAFE_RESOLUTIONS, apply_anlas_safe_defaults as _apply_anlas_safe_defaults,
     ar_payload_mode as _ar_payload_mode, artraccoon_prompt_defaults, assemble_ar_prompt, cooldown_remaining as _cooldown_remaining,
     mark_generation_started as _mark_generation_started, remaining_generations as _remaining_generations,
-    safe_existing_generated_path, safe_generation_defaults, save_generated_images,
+    basic_defaults_from_settings, factory_basic_defaults, safe_existing_generated_path, safe_generation_defaults, saved_basic_defaults, sanitize_basic_defaults, save_generated_images,
 )
 from services.metadata import (
     metadata_settings_summary, metadata_summary, nai_compare_summary_text, parse_nai_metadata,
@@ -118,6 +118,46 @@ class GenState(StatesGroup):
 
 def main_menu():
     return base_main_menu(CHANNEL_URL)
+
+def basic_defaults_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💾 Save my current settings as basic defaults", callback_data="basic_defaults:save")],
+        [InlineKeyboardButton(text="👁 Show basic defaults", callback_data="basic_defaults:show")],
+        [InlineKeyboardButton(text="♻ Reset basic defaults to safe factory", callback_data="basic_defaults:reset")],
+        [InlineKeyboardButton(text="🧪 Test basic defaults", callback_data="basic_defaults:test")],
+        [InlineKeyboardButton(text="🏠 Main menu", callback_data="menu:main")],
+    ])
+
+
+def basic_defaults_text(defaults: dict | None = None, *, saved: bool | None = None) -> str:
+    defaults = sanitize_basic_defaults(defaults if defaults is not None else get_config_value("basic_generation_defaults", None), clamp_steps=True)
+    if saved is None:
+        saved = isinstance(get_config_value("basic_generation_defaults", None), dict)
+    return (
+        "🧰 <b>Public/basic defaults</b>\n"
+        f"Source: <code>{'saved config' if saved else 'factory defaults'}</code>\n\n"
+        f"model_name: <code>{html.escape(str(defaults['model_name']))}</code>\n"
+        f"size: <code>{defaults['width']}x{defaults['height']}</code>\n"
+        f"steps: <code>{defaults['steps']}</code>\n"
+        f"scale: <code>{defaults['scale']}</code>\n"
+        f"sampler: <code>{html.escape(str(defaults['sampler']))}</code>\n"
+        f"uc_preset: <code>{html.escape(str(defaults['uc_preset']))}</code>\n"
+        f"cfg_rescale: <code>{defaults['cfg_rescale']}</code>\n"
+        f"noise_schedule: <code>{html.escape(str(defaults['noise_schedule']))}</code>\n"
+        f"negative_prompt: <code>{html.escape(defaults['negative_prompt'] or '—')}</code>\n"
+        f"add_quality_tags: <code>{defaults['add_quality_tags']}</code>\n"
+        f"variety_plus: <code>{defaults['variety_plus']}</code>\n"
+        "n_samples: <code>1 (forced)</code>\n"
+        "seed: <code>random (-1)</code>"
+    )
+
+
+def settings_from_basic_defaults() -> UserSettings:
+    base = UserSettings()
+    for key, value in saved_basic_defaults().items():
+        if hasattr(base, key):
+            setattr(base, key, value)
+    return base
 
 PAID_PLACEHOLDER = "Функция доступна в платном режиме. Скоро добавим."
 ANLAS_WARNING = PAID_PLACEHOLDER
@@ -398,6 +438,33 @@ async def generation_settings_cmd(message: types.Message):
 async def settings_cmd(message: types.Message):
     s = get_settings(message.from_user.id)
     await message.answer(settings_text(message.from_user.id), reply_markup=settings_markup_for(message.from_user.id), parse_mode="HTML")
+
+@dp.message(Command("basic_defaults"))
+async def basic_defaults_cmd(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Команда не найдена.")
+        return
+    await message.answer(basic_defaults_text(), parse_mode="HTML", reply_markup=basic_defaults_menu())
+
+
+@dp.message(Command("basic_defaults_show"))
+async def basic_defaults_show_cmd(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Команда не найдена.")
+        return
+    raw = get_config_value("basic_generation_defaults", None)
+    prefix = "" if isinstance(raw, dict) else "ℹ️ Saved defaults not found; factory defaults are being used.\n\n"
+    await message.answer(prefix + basic_defaults_text(raw, saved=isinstance(raw, dict)), parse_mode="HTML", reply_markup=basic_defaults_menu())
+
+
+@dp.message(Command("basic_defaults_reset"))
+async def basic_defaults_reset_cmd(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Команда не найдена.")
+        return
+    delete_config_value("basic_generation_defaults")
+    await message.answer("♻ Basic defaults reset. Factory defaults now apply.", reply_markup=basic_defaults_menu())
+
 
 @dp.message(Command("pro"))
 async def pro_cmd(message: types.Message):
@@ -691,9 +758,9 @@ async def generate_image_from_prompt(
     wait = await message.answer("🎨 Генерирую...")
 
     image_bytes = None
-    if s.pending_image_path and Path(s.pending_image_path).exists():
+    if is_advanced_user(user_id) and s.pending_image_path and Path(s.pending_image_path).exists():
         image_bytes = Path(s.pending_image_path).read_bytes()
-    elif message.reply_to_message and message.reply_to_message.photo:
+    elif is_advanced_user(user_id) and message.reply_to_message and message.reply_to_message.photo:
         photo = message.reply_to_message.photo[-1]
         file = await message.bot.get_file(photo.file_id)
         bio = BytesIO()
@@ -847,6 +914,38 @@ async def draw_cmd(message: types.Message):
         patch_settings(message.from_user.id, artraccoon_character_prompt=prompt)
         prompt = s.artraccoon_base_prompt
     await generate_image_from_prompt(message, prompt)
+
+@dp.callback_query(F.data.startswith("basic_defaults:"))
+async def cb_basic_defaults(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("Команда не найдена.", show_alert=True)
+        return
+    action = call.data.rsplit(":", 1)[-1]
+    if action == "save":
+        defaults = basic_defaults_from_settings(get_settings(call.from_user.id))
+        set_config_value("basic_generation_defaults", defaults)
+        await call.message.edit_text("✅ Saved current safe generation subset as public/basic defaults.\n\n" + basic_defaults_text(defaults, saved=True), parse_mode="HTML", reply_markup=basic_defaults_menu())
+        await call.answer("Saved")
+        return
+    if action == "show":
+        raw = get_config_value("basic_generation_defaults", None)
+        prefix = "" if isinstance(raw, dict) else "ℹ️ Saved defaults not found; factory defaults are being used.\n\n"
+        await call.message.edit_text(prefix + basic_defaults_text(raw, saved=isinstance(raw, dict)), parse_mode="HTML", reply_markup=basic_defaults_menu())
+        await call.answer()
+        return
+    if action == "reset":
+        delete_config_value("basic_generation_defaults")
+        await call.message.edit_text("♻ Basic defaults reset. Factory defaults now apply.\n\n" + basic_defaults_text(factory_basic_defaults(), saved=False), parse_mode="HTML", reply_markup=basic_defaults_menu())
+        await call.answer("Reset")
+        return
+    if action == "test":
+        test_settings = settings_from_basic_defaults()
+        payload = sanitize_payload(nai.build_payload("test prompt", test_settings))
+        await call.message.edit_text("🧪 <b>Basic defaults test payload</b>\nPrompt: <code>test prompt</code>\n\n" + nai_payload_summary_text(payload, test_settings), parse_mode="HTML", reply_markup=basic_defaults_menu())
+        await call.answer()
+        return
+    await call.answer("Unknown action", show_alert=True)
+
 
 @dp.callback_query(F.data == "menu:main")
 async def cb_main(call: types.CallbackQuery):
