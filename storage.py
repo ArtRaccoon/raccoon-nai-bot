@@ -189,3 +189,16 @@ def set_config_value(key: str, value) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         tmp.replace(CONFIG_FILE)
+
+
+def delete_config_value(key: str) -> None:
+    with _STORAGE_LOCK:
+        data = _load_config_unlocked()
+        data.pop(key, None)
+        tmp = CONFIG_FILE.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(CONFIG_FILE)
