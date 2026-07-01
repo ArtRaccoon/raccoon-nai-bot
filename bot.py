@@ -63,8 +63,9 @@ NOVELAI_TOKEN = (os.getenv("NOVELAI_TOKEN") or os.getenv("NAI_TOKEN") or "").str
 NAI_MODEL = os.getenv("NAI_MODEL", "").strip()
 PROXY_URL = os.getenv("PROXY_URL", "socks5://127.0.0.1:1080").strip()
 CHANNEL_URL = os.getenv("CHANNEL_URL", "").strip()
-SUPPORT_GROUP_ID = int(os.getenv("SUPPORT_GROUP_ID", "-1003995260042") or "-1003995260042")
-SUPPORT_URL = os.getenv("SUPPORT_URL", "https://pay.cloudtips.ru/p/e6c50242").strip()
+SUPPORT_GROUP_ID_RAW = os.getenv("SUPPORT_GROUP_ID", "").strip()
+SUPPORT_GROUP_ID = int(SUPPORT_GROUP_ID_RAW) if SUPPORT_GROUP_ID_RAW.lstrip("-").isdigit() else None
+SUPPORT_URL = os.getenv("SUPPORT_URL", "").strip()
 
 ADMIN_IDS = [
     int(x.strip())
@@ -174,10 +175,11 @@ SUPPORTED_SUPPORT_CONTENT_TYPES = {"text", "photo", "document", "animation", "vi
 
 
 def donate_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💖 Поддержать проект", url=SUPPORT_URL)],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main")],
-    ])
+    buttons = []
+    if SUPPORT_URL:
+        buttons.append([InlineKeyboardButton(text="💖 Поддержать проект", url=SUPPORT_URL)])
+    buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def admin_support_menu(user_id: int) -> InlineKeyboardMarkup:
@@ -236,6 +238,9 @@ async def start_support_flow(message: types.Message, state: FSMContext) -> None:
 
 
 async def send_donate_message(message: types.Message) -> None:
+    if not SUPPORT_URL:
+        await message.answer("Ссылка для поддержки проекта пока не настроена.", reply_markup=main_menu())
+        return
     await message.answer(DONATE_TEXT, reply_markup=donate_menu())
 
 
@@ -666,6 +671,15 @@ async def show_admin_panel(message: types.Message) -> None:
 
 
 
+@dp.message(Command("chat_id"))
+async def chat_id_cmd(message: types.Message):
+    await message.answer(
+        f"Chat ID: <code>{message.chat.id}</code>\n"
+        f"Chat type: <code>{html.escape(message.chat.type)}</code>",
+        parse_mode="HTML",
+    )
+
+
 @dp.message(Command("support"))
 async def support_cmd(message: types.Message, state: FSMContext):
     log.info("support message received: support flow started by user %s", message.from_user.id if message.from_user else "unknown")
@@ -710,11 +724,14 @@ async def support_message_input(message: types.Message, state: FSMContext):
         except Exception:
             log.exception("support errors: failed to deliver support message to admin %s", admin_id)
 
-    try:
-        await send_support_content(message.bot, SUPPORT_GROUP_ID, message, prefix="📩 Анонимное обращение")
-        log.info("support delivered to group %s for user %s", SUPPORT_GROUP_ID, message.from_user.id)
-    except Exception:
-        log.exception("support errors: failed to deliver support message to group %s", SUPPORT_GROUP_ID)
+    if SUPPORT_GROUP_ID is None:
+        log.warning("support errors: SUPPORT_GROUP_ID is not configured; skipping anonymous group delivery")
+    else:
+        try:
+            await send_support_content(message.bot, SUPPORT_GROUP_ID, message, prefix="📩 Анонимное обращение")
+            log.info("support delivered to group %s for user %s", SUPPORT_GROUP_ID, message.from_user.id)
+        except Exception:
+            log.exception("support errors: failed to deliver support message to group %s", SUPPORT_GROUP_ID)
 
     await state.clear()
     if delivered_admins:
