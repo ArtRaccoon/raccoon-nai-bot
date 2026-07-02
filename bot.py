@@ -13,7 +13,7 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import BufferedInputFile, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from aiogram.client.session.aiohttp import AiohttpSession
 from dotenv import load_dotenv
 
@@ -66,6 +66,8 @@ CHANNEL_URL = os.getenv("CHANNEL_URL", "").strip()
 SUPPORT_GROUP_ID_RAW = os.getenv("SUPPORT_GROUP_ID", "").strip()
 SUPPORT_GROUP_ID = int(SUPPORT_GROUP_ID_RAW) if SUPPORT_GROUP_ID_RAW.lstrip("-").isdigit() else None
 SUPPORT_URL = os.getenv("SUPPORT_URL", "").strip()
+MODERATION_CHANNEL_ID_RAW = os.getenv("MODERATION_CHANNEL_ID", "").strip()
+MODERATION_CHANNEL_ID = int(MODERATION_CHANNEL_ID_RAW) if MODERATION_CHANNEL_ID_RAW.lstrip("-").isdigit() else None
 
 ADMIN_IDS = [
     int(x.strip())
@@ -417,27 +419,89 @@ def _blockquote(text: str, limit: int = 3500) -> str:
     return f"<blockquote{expandable}>{safe}</blockquote>"
 
 def moderation_summary(user: types.User, original_prompt: str, final_prompt: str, s, candidates: list[str] | None = None) -> str:
-    settings = (
-        f"model={html.escape(s.model_name)}, size={s.width}x{s.height}, "
-        f"steps={s.steps}, cfg={s.scale}, seed={'random' if s.seed == -1 else s.seed}, "
-        f"sampler={html.escape(s.sampler)}, n={s.n_samples}"
+    timestamp = datetime.now(timezone.utc).isoformat()
+    return moderation_metadata_text(
+        user,
+        original_prompt,
+        final_prompt,
+        s,
+        image_count=getattr(s, "n_samples", 1),
+        timestamp=timestamp,
+        title="🛡 <b>Модерация генерации</b>",
+        candidates=candidates,
     )
+
+
+def moderation_metadata_text(
+    user: types.User,
+    original_prompt: str,
+    final_prompt: str,
+    s,
+    *,
+    image_count: int,
+    timestamp: str,
+    title: str = "🛡 <b>Модерация генерации</b>",
+    candidates: list[str] | None = None,
+) -> str:
+    username = f"@{user.username}" if user.username else "—"
+    full_name = " ".join(x for x in [user.first_name, user.last_name] if x) or "—"
+    original_block = ""
+    if (original_prompt or "") != (final_prompt or ""):
+        original_block = "🧾 <b>Original prompt</b>\n" + _blockquote(original_prompt or "—") + "\n"
     candidates_block = ""
     if candidates:
-        lines = "\n".join(f"• {html.escape(tag)}" for tag in candidates)
+        lines = "\n".join(f"• {html.escape(tag)}" for tag in candidates[:50])
         candidates_block = f"\n\n📚 <b>New dictionary candidates</b>\n{lines}"
     return (
-        "🛡 <b>Модерация генерации</b>\n"
-        f"👤 <b>User:</b> <code>{html.escape(user_label(user))}</code>\n"
-        f"⚙️ <b>Settings:</b> <code>{settings}</code>\n\n"
+        f"{title}\n"
+        f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+        f"🔗 <b>Username:</b> <code>{html.escape(username)}</code>\n"
+        f"👤 <b>Full name:</b> <code>{html.escape(full_name)}</code>\n"
+        f"🕒 <b>Timestamp:</b> <code>{html.escape(timestamp)}</code>\n\n"
         "📝 <b>Prompt</b>\n"
-        f"{_blockquote(original_prompt or final_prompt)}\n"
-        "🎨 <b>Final Prompt</b>\n"
-        f"{_blockquote(final_prompt)}\n"
+        f"{_blockquote(final_prompt or original_prompt)}\n"
+        f"{original_block}"
         "🚫 <b>Negative prompt</b>\n"
-        f"{_blockquote(s.negative_prompt or '—', 1800)}"
+        f"{_blockquote(s.negative_prompt or '—', 1800)}\n"
+        "⚙️ <b>Settings</b>\n"
+        f"Model: <code>{html.escape(s.model_name)}</code>\n"
+        f"Size: <code>{s.width}x{s.height}</code>\n"
+        f"Sampler: <code>{html.escape(s.sampler)}</code>\n"
+        f"Steps: <code>{s.steps}</code>\n"
+        f"CFG: <code>{s.scale}</code>\n"
+        f"Seed: <code>{'random' if s.seed == -1 else s.seed}</code>\n"
+        f"Number of images: <code>{image_count}</code>"
         f"{candidates_block}"
     )
+
+
+async def _send_moderation_text_to_admins(bot_obj: Bot, text: str, markup: InlineKeyboardMarkup | None = None) -> int:
+    delivered = 0
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot_obj.send_message(admin_id, text, parse_mode="HTML", reply_markup=markup)
+            delivered += 1
+        except Exception:
+            log.exception("Failed to send moderation prompt summary to admin %s", admin_id)
+    return delivered
+
+
+async def _send_moderation_images_to_admins(bot_obj: Bot, user: types.User, images: list[bytes], caption: str) -> int:
+    delivered = 0
+    for admin_id in ADMIN_IDS:
+        for idx, img in enumerate(images, start=1):
+            try:
+                await bot_obj.send_photo(
+                    admin_id,
+                    BufferedInputFile(img, filename=f"moderation_{user.id}_{idx}.png"),
+                    caption=caption if idx == 1 else None,
+                    parse_mode="HTML",
+                )
+                delivered += 1
+            except Exception:
+                log.exception("Failed to send generated image copy to admin %s for user %s image %s", admin_id, user.id, idx)
+    return delivered
+
 
 async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: str, final_prompt: str, s, candidates: list[str] | None = None, hidden_vibe_applied: bool = False) -> None:
     if user.id in ADMIN_IDS:
@@ -449,30 +513,54 @@ async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: 
     if candidates:
         moderation_candidates[token] = list(dict.fromkeys(candidates))
     markup = moderation_dictionary_menu(token) if candidates else None
-    for admin_id in ADMIN_IDS:
+    if MODERATION_CHANNEL_ID is not None:
         try:
-            await bot_obj.send_message(admin_id, text, parse_mode="HTML", reply_markup=markup)
+            await bot_obj.send_message(MODERATION_CHANNEL_ID, text, parse_mode="HTML", reply_markup=markup)
+            log.info("Delivered moderation prompt summary to channel %s for user %s", MODERATION_CHANNEL_ID, user.id)
+            return
         except Exception:
-            log.exception("Failed to send moderation prompt summary to admin %s", admin_id)
+            log.exception("Failed to send moderation prompt summary to channel %s for user %s; falling back to admins", MODERATION_CHANNEL_ID, user.id)
+    delivered = await _send_moderation_text_to_admins(bot_obj, text, markup)
+    if delivered:
+        log.info("Delivered moderation prompt summary to %s admins for user %s", delivered, user.id)
+
+
+async def send_moderation_images(bot_obj: Bot, user: types.User, images: list[bytes], original_prompt: str, final_prompt: str, s, candidates: list[str] | None = None, hidden_vibe_applied: bool = False) -> None:
+    if user.id in ADMIN_IDS or not images:
+        return
+    timestamp = datetime.now(timezone.utc).isoformat()
+    text = moderation_metadata_text(
+        user,
+        original_prompt,
+        final_prompt,
+        s,
+        image_count=len(images),
+        timestamp=timestamp,
+        title="🛡 <b>Готовые изображения для модерации</b>",
+        candidates=candidates,
+    )
+    if hidden_vibe_applied:
+        text += "\n\n<blockquote expandable>🦝 Hidden ArtRaccoon vibe applied</blockquote>"
+    if MODERATION_CHANNEL_ID is not None:
+        try:
+            await bot_obj.send_message(MODERATION_CHANNEL_ID, text, parse_mode="HTML")
+            if len(images) == 1:
+                await bot_obj.send_photo(MODERATION_CHANNEL_ID, BufferedInputFile(images[0], filename=f"moderation_{user.id}_1.png"))
+            else:
+                media = [InputMediaPhoto(media=BufferedInputFile(img, filename=f"moderation_{user.id}_{idx}.png")) for idx, img in enumerate(images, start=1)]
+                await bot_obj.send_media_group(MODERATION_CHANNEL_ID, media=media)
+            log.info("Delivered %s moderation images to channel %s for user %s", len(images), MODERATION_CHANNEL_ID, user.id)
+            return
+        except Exception:
+            log.exception("Failed to send moderation images to channel %s for user %s; falling back to admins", MODERATION_CHANNEL_ID, user.id)
+    delivered = await _send_moderation_text_to_admins(bot_obj, text)
+    delivered_images = await _send_moderation_images_to_admins(bot_obj, user, images, "🛡 <b>Готовые изображения для модерации</b>")
+    if delivered or delivered_images:
+        log.info("Delivered moderation image fallback to admins for user %s: text=%s images=%s", user.id, delivered, delivered_images)
+
 
 async def send_moderation_image(bot_obj: Bot, user: types.User, img: bytes, original_prompt: str, final_prompt: str, s, idx: int, candidates: list[str] | None = None, hidden_vibe_applied: bool = False) -> None:
-    if user.id in ADMIN_IDS:
-        return
-    caption = f"🛡 <b>Готовое изображение</b>\n👤 <code>{html.escape(user_label(user))}</code>\n📐 <code>{s.width}x{s.height}</code> · 🎲 <code>{'random' if s.seed == -1 else s.seed}</code>"
-    if hidden_vibe_applied:
-        caption += "\n<blockquote expandable>🦝 Hidden ArtRaccoon vibe applied</blockquote>"
-    if candidates:
-        caption += "\n\n📚 <b>Dictionary candidates</b>\n" + "\n".join(f"• {html.escape(tag)}" for tag in candidates[:20])
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot_obj.send_photo(
-                admin_id,
-                BufferedInputFile(img, filename=f"moderation_{user.id}_{idx}.png"),
-                caption=caption,
-                parse_mode="HTML",
-            )
-        except Exception:
-            log.exception("Failed to send generated image copy to admin %s for user %s image %s", admin_id, user.id, idx)
+    await send_moderation_images(bot_obj, user, [img], original_prompt, final_prompt, s, candidates, hidden_vibe_applied)
 
 async def show_pending_prompt(message: types.Message, user_id: int) -> None:
     s = get_settings(user_id)
@@ -1117,8 +1205,8 @@ async def nai_site_mode_cmd(message: types.Message):
 
 
 async def notify_admins_about_prompt(message: types.Message, prompt: str) -> None:
-    """Отправляет админу промт и настройки пользователя для мягкой модерации."""
-    if not ADMIN_IDS:
+    """Отправляет промт и настройки пользователя для мягкой модерации."""
+    if MODERATION_CHANNEL_ID is None and not ADMIN_IDS:
         return
 
     user = message.from_user
@@ -1151,11 +1239,17 @@ async def notify_admins_about_prompt(message: types.Message, prompt: str) -> Non
         f"Negative: <code>{(s.negative_prompt or '—')[:800]}</code>"
     )
 
-    for admin_id in ADMIN_IDS:
+    if MODERATION_CHANNEL_ID is not None:
         try:
-            await message.bot.send_message(admin_id, text, parse_mode="HTML")
+            await message.bot.send_message(MODERATION_CHANNEL_ID, text, parse_mode="HTML")
+            log.info("Delivered generation prompt notification to channel %s for user %s", MODERATION_CHANNEL_ID, user.id)
+            return
         except Exception:
-            log.exception("Failed to notify admin %s", admin_id)
+            log.exception("Failed to send generation prompt notification to channel %s for user %s; falling back to admins", MODERATION_CHANNEL_ID, user.id)
+
+    delivered = await _send_moderation_text_to_admins(message.bot, text)
+    if delivered:
+        log.info("Delivered generation prompt notification to %s admins for user %s", delivered, user.id)
 
 
 async def generate_image_from_prompt(
@@ -1245,12 +1339,13 @@ async def generate_image_from_prompt(
         patch_settings(user_id, pending_image_path="", pending_prompt="", pending_original_prompt="", prompt_action="")
         await wait.delete()
 
+        await send_moderation_images(message.bot, user, images, original_prompt, final_prompt, s, candidates, hidden_vibe_applied)
+
         for idx, img in enumerate(images, start=1):
             name = f"novelai_{idx}.png"
             image = BufferedInputFile(img, filename=name)
             caption = generation_result_caption(s.model_name, s.width, s.height, s.seed)
             try:
-                await send_moderation_image(message.bot, user, img, original_prompt, final_prompt, s, idx, candidates, hidden_vibe_applied)
                 await message.answer_photo(
                     image,
                     caption=caption,
