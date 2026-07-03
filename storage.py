@@ -264,3 +264,65 @@ def delete_config_value(key: str) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         tmp.replace(CONFIG_FILE)
+
+PAYMENTS_FILE = DATA_DIR / "payments.json"
+
+
+def _load_payments_unlocked() -> list[dict]:
+    _ensure()
+    if not PAYMENTS_FILE.exists():
+        PAYMENTS_FILE.write_text("[]", encoding="utf-8")
+    try:
+        data = json.loads(PAYMENTS_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _save_payments_unlocked(records: list[dict]) -> None:
+    _ensure()
+    tmp = PAYMENTS_FILE.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(records, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    tmp.replace(PAYMENTS_FILE)
+
+
+def add_payment_record(record: dict) -> bool:
+    with _STORAGE_LOCK:
+        records = _load_payments_unlocked()
+        payment_id = str(record.get("payment_id") or "")
+        if payment_id and any(str(item.get("payment_id")) == payment_id for item in records if isinstance(item, dict)):
+            return False
+        records.insert(0, dict(record))
+        _save_payments_unlocked(records)
+        return True
+
+
+def payment_exists(payment_id: str) -> bool:
+    with _STORAGE_LOCK:
+        pid = str(payment_id or "")
+        return bool(pid) and any(str(item.get("payment_id")) == pid for item in _load_payments_unlocked() if isinstance(item, dict))
+
+
+def get_recent_payments(limit: int = 20) -> list[dict]:
+    with _STORAGE_LOCK:
+        return [dict(item) for item in _load_payments_unlocked() if isinstance(item, dict)][: max(0, int(limit))]
+
+
+def get_user_payments(user_id: int) -> list[dict]:
+    with _STORAGE_LOCK:
+        uid = int(user_id)
+        return [dict(item) for item in _load_payments_unlocked() if isinstance(item, dict) and int(item.get("user_id", 0) or 0) == uid]
+
+
+def credit_paid_generations(user_id: int, ink_amount: int, stars: int = 0) -> int:
+    with _STORAGE_LOCK:
+        data = _load_all_unlocked()
+        user = data.setdefault(str(user_id), _default_user())
+        user["paid_generations_balance"] = int(user.get("paid_generations_balance", 0) or 0) + int(ink_amount)
+        user["total_paid_stars"] = int(user.get("total_paid_stars", 0) or 0) + int(stars)
+        _save_all_unlocked(data)
+        return int(user["paid_generations_balance"])

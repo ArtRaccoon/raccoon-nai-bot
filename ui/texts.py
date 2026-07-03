@@ -5,8 +5,8 @@ from app.services.nai_client import payload_summary
 from config_defaults import QUICK_PRESETS
 
 
-PAID_PLACEHOLDER_TEXT = "💎 Эта функция появится в платном режиме.\nСкоро добавим покупку генераций и расширенные настройки."
-DAILY_LIMIT_TEXT = "🕯️ На сегодня бесплатные генерации закончились.\nЗавтра появятся новые 50 попыток."
+PAID_PLACEHOLDER_TEXT = "✒️ Пополнить запас Чернил можно за Telegram Stars."
+DAILY_LIMIT_TEXT = "🕯️ Бесплатные генерации на сегодня закончились.\n\nМожно дождаться завтрашнего сброса или пополнить запас Чернил."
 GENERATION_STARTED_TEXT = "✨ Генерирую. Енот смешивает пиксели..."
 PROMPT_EMPTY_TEXT = "🖼️ Черновик пока пуст. Пришли идею картинки обычным сообщением."
 CANCEL_TEXT = "❌ Черновик очищен. Возвращаю в главное меню."
@@ -28,14 +28,14 @@ def start_text(remaining: int | None, daily_limit: int, is_admin: bool = False) 
     )
 
 
-def howto_text(remaining: int | None = None, daily_limit: int = 50) -> str:
+def howto_text(remaining: int | None = None, daily_limit: int = 10) -> str:
     remaining_line = f"\n\nСегодня осталось: {remaining}/{daily_limit}." if remaining is not None else ""
     return (
         "❓ <b>Помощь RaccoonNAI</b>\n\n"
         "• Напиши идею картинки одним сообщением.\n"
         "• Проверь черновик и нажми ✅ Генерировать.\n"
         "• ✏️ можно поправить, 🧹 очистить, ❌ отменить.\n"
-        "• Бесплатно: 50 генераций в день. ✨"
+        "• Бесплатно: 10 генераций в день. ✨"
         + remaining_line
     )
 
