@@ -1,6 +1,7 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config_defaults import MODELS, RESOLUTIONS, SAMPLERS, UC_PRESETS, QUICK_PRESETS, NOISE_SCHEDULES, MAX_EXTRA_CHARACTERS
 from app.nai.settings_registry import ADMIN_SITE_CLONE_FIELDS, BASIC_MENU_FIELDS
+from services.payments import PAYMENT_PACKAGES
 
 def rows(buttons, width=2):
     return [buttons[i:i+width] for i in range(0, len(buttons), width)]
@@ -11,7 +12,7 @@ def main_menu_button() -> InlineKeyboardButton:
 def main_menu(channel_url: str = "") -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text="🎨 Новый промпт", callback_data="menu:gen"),
-        InlineKeyboardButton(text="💎 Купить генерации", callback_data="paid:buy"),
+        InlineKeyboardButton(text="✒️ Пополнить чернила", callback_data="paid:buy"),
         InlineKeyboardButton(text="💬 Связь с админом", callback_data="support:start"),
         InlineKeyboardButton(text="💖 Поддержать проект", callback_data="donate:open"),
         InlineKeyboardButton(text="❓ Помощь", callback_data="menu:howto"),
@@ -19,6 +20,22 @@ def main_menu(channel_url: str = "") -> InlineKeyboardMarkup:
     if channel_url:
         buttons.append(InlineKeyboardButton(text="📢 Канал", url=channel_url))
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
+
+def purchase_menu() -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(text=f"⭐ {pkg['ink_amount']} ✒️ — {pkg['stars_price']} Stars (≈ {pkg['generations']} ген.)", callback_data=f"paid:pkg:{pkg_id}")
+        for pkg_id, pkg in PAYMENT_PACKAGES.items()
+    ]
+    buttons.append(InlineKeyboardButton(text="📦 Мой баланс", callback_data="paid:balance"))
+    buttons.append(InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu:main"))
+    return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
+
+def limit_exhausted_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✒️ Пополнить чернила", callback_data="paid:buy")],
+        [InlineKeyboardButton(text="📦 Мой баланс", callback_data="paid:balance")],
+        [main_menu_button()],
+    ])
 
 def pending_prompt_menu(has_image: bool = False, pro: bool = False, compact: bool = False, vibe_enabled: bool = False, vibe_available: bool = False) -> InlineKeyboardMarkup:
     buttons = [
@@ -236,7 +253,7 @@ def admin_panel_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🧪 NovelAI debug", callback_data="admin:nai_debug"),
         InlineKeyboardButton(text="👥 Character+", callback_data="char:menu"),
         InlineKeyboardButton(text="📚 Словарь", callback_data="admin:dict"),
-        InlineKeyboardButton(text="💎 Покупки / генерации", callback_data="admin:purchases"),
+        InlineKeyboardButton(text="💎 Платежи", callback_data="admin:purchases"),
         InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users"),
         InlineKeyboardButton(text="📢 Рассылка", callback_data="admin:broadcast"),
         main_menu_button(),
@@ -288,9 +305,10 @@ def admin_nai_debug_menu() -> InlineKeyboardMarkup:
 def admin_purchases_menu() -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text="👤 Найти пользователя по ID", callback_data="admin_purchases:find"),
-        InlineKeyboardButton(text="➕ Выдать генерации", callback_data="admin_purchases:add"),
-        InlineKeyboardButton(text="➖ Списать генерации", callback_data="admin_purchases:subtract"),
+        InlineKeyboardButton(text="➕ Выдать Чернила", callback_data="admin_purchases:add"),
+        InlineKeyboardButton(text="➖ Списать Чернила", callback_data="admin_purchases:subtract"),
         InlineKeyboardButton(text="👁 Показать баланс", callback_data="admin_purchases:balance"),
+        InlineKeyboardButton(text="💎 Последние платежи", callback_data="admin_purchases:payments"),
         admin_back_button(),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))

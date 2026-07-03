@@ -13,7 +13,7 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from aiogram.types import BufferedInputFile, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, LabeledPrice
 from aiogram.client.session.aiohttp import AiohttpSession
 from dotenv import load_dotenv
 
@@ -21,7 +21,7 @@ from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRE
 from keyboards import (
     main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
     after_generation_menu, generation_item_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu, moderation_dictionary_menu, dictionary_menu, dictionary_pending_menu, admin_panel_menu,
-    admin_ar_vibe_menu, admin_nai_debug_menu, admin_site_clone_menu, registry_fields_text, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu, characters_menu,
+    admin_ar_vibe_menu, admin_nai_debug_menu, admin_site_clone_menu, registry_fields_text, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu, characters_menu, purchase_menu, limit_exhausted_menu,
 )
 from app.services.nai_client import (
     NovelAIClient, NovelAIError, sanitize_payload,
@@ -36,15 +36,16 @@ from storage import (
     get_settings, save_settings, patch_settings, add_history, get_history,
     add_favorite, get_favorites, delete_favorite, set_last_metadata, get_last_metadata,
     set_last_payload, get_last_payload, get_config_value, set_config_value, delete_config_value,
-    load_all_users_for_admin_stats, get_user_record_for_admin, adjust_paid_generations_balance, clear_user_draft_for_admin, update_user_identity
+    load_all_users_for_admin_stats, get_user_record_for_admin, adjust_paid_generations_balance, clear_user_draft_for_admin, update_user_identity, add_payment_record, get_recent_payments, record_successful_stars_payment_once
 )
 
 from services.generation import (
     DAILY_GENERATION_LIMIT, GENERATION_TIMEOUT_SECONDS, SAFE_RESOLUTIONS, apply_anlas_safe_defaults as _apply_anlas_safe_defaults,
     ar_payload_mode as _ar_payload_mode, artraccoon_prompt_defaults, assemble_ar_prompt, cooldown_remaining as _cooldown_remaining,
-    mark_generation_started as _mark_generation_started, remaining_generations as _remaining_generations,
+    remaining_generations as _remaining_generations, free_remaining_today as _free_remaining_today, reserve_generation_credit as _reserve_generation_credit, commit_generation_credit as _commit_generation_credit, rollback_generation_credit as _rollback_generation_credit,
     basic_defaults_from_settings, factory_basic_defaults, safe_existing_generated_path, safe_generation_defaults, saved_basic_defaults, sanitize_basic_defaults, save_generated_images,
 )
+from services.payments import INK_PER_GENERATION, PAYMENT_PACKAGES, make_payment_payload, parse_payment_payload
 from services.metadata import (
     metadata_settings_summary, metadata_summary, nai_compare_summary_text, parse_nai_metadata,
 )
@@ -124,8 +125,17 @@ def remaining_generations(user_id: int) -> int | None:
     return _remaining_generations(user_id, ADMIN_IDS)
 
 
-def mark_generation_started(user_id: int) -> None:
-    _mark_generation_started(user_id, ADMIN_IDS)
+def free_remaining_today(user_id: int) -> int | None:
+    return _free_remaining_today(user_id, ADMIN_IDS)
+
+def reserve_generation_credit(user_id: int) -> dict:
+    return _reserve_generation_credit(user_id, ADMIN_IDS)
+
+def commit_generation_credit(reservation: dict) -> None:
+    _commit_generation_credit(reservation)
+
+def rollback_generation_credit(reservation: dict) -> None:
+    _rollback_generation_credit(reservation)
 
 
 def cooldown_remaining(user_id: int) -> int:
@@ -567,7 +577,7 @@ async def show_pending_prompt(message: types.Message, user_id: int) -> None:
     if not s.pending_prompt:
         await message.answer(PROMPT_EMPTY_TEXT, reply_markup=main_menu())
         return
-    preview = art_prompt_preview_text(s) if s.artraccoon_mode else prompt_preview_text(s.pending_prompt, s.pending_original_prompt, s, remaining_generations(user_id))
+    preview = art_prompt_preview_text(s) if s.artraccoon_mode else prompt_preview_text(s.pending_prompt, s.pending_original_prompt, s, free_remaining_today(user_id))
     await message.answer(
         preview,
         parse_mode="HTML",
@@ -576,8 +586,42 @@ async def show_pending_prompt(message: types.Message, user_id: int) -> None:
 
 
 def howto_text(user_id: int | None = None) -> str:
-    remaining = remaining_generations(user_id) if user_id is not None else None
+    remaining = free_remaining_today(user_id) if user_id is not None else None
     return branded_howto_text(remaining, DAILY_GENERATION_LIMIT)
+
+
+def user_balance_text(user_id: int) -> str:
+    st = get_settings(user_id)
+    free_left = "∞" if user_id in ADMIN_IDS else str(free_remaining_today(user_id))
+    return (
+        "📦 <b>Мой баланс</b>\n\n"
+        f"🖌 Бесплатно сегодня: <code>{free_left}</code> / <code>{DAILY_GENERATION_LIMIT}</code>\n"
+        f"✒️ Чернила: <code>{int(st.paid_generations_balance or 0)}</code>\n"
+        f"Стоимость генерации: <code>{INK_PER_GENERATION}</code> ✒️\n"
+        f"Всего оплачено: <code>{int(st.total_paid_stars or 0)}</code> Stars"
+    )
+
+def purchase_text(user_id: int) -> str:
+    package_lines = []
+    for pkg in PAYMENT_PACKAGES.values():
+        package_lines.append(f"<b>{pkg['ink_amount']} ✒️</b> — {pkg['stars_price']} Stars\n≈ {pkg['generations']} генераций")
+    return (
+        f"✒️ <b>Пополнить чернила</b>\n\n"
+        "Бесплатно: 10 генераций в день.\n"
+        "Платные Чернила расходуются после бесплатного лимита.\n"
+        f"Стоимость стандартной генерации: {INK_PER_GENERATION} ✒️.\n\n"
+        + "\n\n".join(package_lines)
+    )
+
+def admin_payments_text() -> str:
+    recent_payments = get_recent_payments(20)
+    all_payments = get_recent_payments(1000000)
+    total_stars = sum(int(p.get("amount", 0) or 0) for p in all_payments if p.get("provider") == "telegram_stars" and p.get("currency") == "XTR")
+    total_ink = sum(int(p.get("ink_amount", p.get("generations", 0)) or 0) for p in all_payments if p.get("provider") == "telegram_stars")
+    lines = ["💎 <b>Платежи</b>", "", f"Последние 20: <code>{len(recent_payments)}</code>", f"Всего Stars получено: <code>{total_stars}</code>", f"Всего Чернил продано: <code>{total_ink}</code>", ""]
+    for p in recent_payments[:20]:
+        lines.append(f"• <code>{html.escape(str(p.get('user_id')))}</code> {html.escape(str(p.get('package_id') or p.get('provider')))}: <code>{int(p.get('ink_amount', p.get('generations',0)) or 0)}</code> ✒️ / <code>{int(p.get('amount',0) or 0)}</code> {html.escape(str(p.get('currency','')))}")
+    return "\n".join(lines)
 
 def settings_text(user_id: int) -> str:
     s = get_settings(user_id)
@@ -657,7 +701,7 @@ async def retry_last_prompt(message: types.Message, actor: types.User | None = N
 async def start(message: types.Message):
     get_settings(message.from_user.id)
     await message.answer(
-        start_text(remaining_generations(message.from_user.id), DAILY_GENERATION_LIMIT, message.from_user.id in ADMIN_IDS),
+        start_text(free_remaining_today(message.from_user.id), DAILY_GENERATION_LIMIT, message.from_user.id in ADMIN_IDS),
         reply_markup=main_menu(),
         parse_mode="HTML",
     )
@@ -758,8 +802,7 @@ def format_admin_stats(stats: dict) -> str:
         f"🔥 Active users today: <code>{stats['active_today']}</code>\n"
         f"📈 Active users last 7 days: <code>{stats['active_7d']}</code>\n"
         f"🎁 Free generations used: <code>{stats['free_used']}</code>\n"
-        "💎 Paid generations used: <code>not implemented</code>\n"
-        f"📦 Total remaining paid generation balance: <code>{stats['paid_balance']}</code>\n"
+        f"✒️ Total remaining Ink balance: <code>{stats['paid_balance']}</code>\n"
         f"🦝 Users with ArtRaccoon Vibe enabled: <code>{stats['vibe_users']}</code>\n"
         f"⚙️ Users with advanced/admin mode enabled: <code>{stats['advanced_users']}</code>\n"
         f"🧪 Users with saved pending drafts: <code>{stats['pending_drafts']}</code>\n"
@@ -899,6 +942,68 @@ async def admin_support_reply_input(message: types.Message, state: FSMContext):
         log.exception("support errors: failed to send admin reply to user %s", target_user_id)
         await message.answer("Не удалось отправить ответ пользователю. Попробуй позже.")
 
+
+
+@dp.message(Command("payments"))
+async def payments_cmd(message: types.Message):
+    if not message.from_user or message.from_user.id not in ADMIN_IDS:
+        await message.answer("Команда не найдена.")
+        return
+    await message.answer(admin_payments_text(), parse_mode="HTML", reply_markup=admin_purchases_menu())
+
+def _manual_payment_record(admin_id: int, user_id: int, amount: int, new_balance: int) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    add_payment_record({
+        "payment_id": f"manual:{now}:{admin_id}:{user_id}:{amount}",
+        "provider": "manual",
+        "telegram_payment_charge_id": "",
+        "user_id": int(user_id),
+        "package_id": "manual",
+        "generations": int(amount) // INK_PER_GENERATION,
+        "ink_amount": int(amount),
+        "amount": 0,
+        "currency": "XTR",
+        "status": "succeeded",
+        "created_at": now,
+        "paid_at": now,
+        "metadata": {"admin_id": int(admin_id), "new_balance": int(new_balance)},
+    })
+
+@dp.message(Command("grant"))
+async def grant_cmd(message: types.Message):
+    if not message.from_user or message.from_user.id not in ADMIN_IDS:
+        await message.answer("Команда не найдена.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 3:
+        await message.answer("Использование: /grant <user_id> <ink_amount>")
+        return
+    try:
+        user_id, amount = int(parts[1]), abs(int(parts[2]))
+    except (TypeError, ValueError):
+        await message.answer("Использование: /grant <user_id> <ink_amount>")
+        return
+    balance = adjust_paid_generations_balance(user_id, amount)
+    _manual_payment_record(message.from_user.id, user_id, amount, balance)
+    await message.answer(f"✅ Начислено:\n+{amount} ✒️\n\nБаланс пользователя <code>{user_id}</code>: <code>{balance}</code> ✒️", parse_mode="HTML", reply_markup=admin_purchases_menu())
+
+@dp.message(Command("take"))
+async def take_cmd(message: types.Message):
+    if not message.from_user or message.from_user.id not in ADMIN_IDS:
+        await message.answer("Команда не найдена.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 3:
+        await message.answer("Использование: /take <user_id> <ink_amount>")
+        return
+    try:
+        user_id, amount = int(parts[1]), abs(int(parts[2]))
+    except (TypeError, ValueError):
+        await message.answer("Использование: /take <user_id> <ink_amount>")
+        return
+    balance = adjust_paid_generations_balance(user_id, -amount)
+    _manual_payment_record(message.from_user.id, user_id, -amount, balance)
+    await message.answer(f"✅ Списано:\n-{amount} ✒️\n\nБаланс пользователя <code>{user_id}</code>: <code>{balance}</code> ✒️", parse_mode="HTML", reply_markup=admin_purchases_menu())
 
 @dp.message(Command("admin", "xxx"))
 async def admin_cmd(message: types.Message):
@@ -1263,8 +1368,9 @@ async def generate_image_from_prompt(
         return
 
     user_id = user.id
-    if user_id not in ADMIN_IDS and remaining_generations(user_id) == 0:
-        await message.answer(DAILY_LIMIT_TEXT, reply_markup=main_menu())
+    st = get_settings(user_id)
+    if user_id not in ADMIN_IDS and free_remaining_today(user_id) == 0 and int(st.paid_generations_balance or 0) < INK_PER_GENERATION:
+        await message.answer(DAILY_LIMIT_TEXT, reply_markup=limit_exhausted_menu())
         return
 
     cd = cooldown_remaining(user_id)
@@ -1287,6 +1393,8 @@ async def generate_image_from_prompt(
         await message.answer(f"⏳ Генерация поставлена в очередь. Перед тобой: {generation_waiting}")
     generation_waiting += 1
     counted = True
+    credit_reservation = {"user_id": user_id, "kind": "none"}
+    credit_committed = False
     wait = await message.answer(GENERATION_STARTED_TEXT)
 
     image_bytes = None
@@ -1307,7 +1415,10 @@ async def generate_image_from_prompt(
         async with generation_lock:
             generation_waiting = max(0, generation_waiting - 1)
             counted = False
-            mark_generation_started(user_id)
+            credit_reservation = reserve_generation_credit(user_id)
+            if credit_reservation.get("kind") == "none":
+                await wait.edit_text(DAILY_LIMIT_TEXT, reply_markup=limit_exhausted_menu())
+                return
             candidates = learn_from_english_prompt(visible_prompt) if looks_like_english_tags(visible_prompt) else []
             await send_moderation_copy(message.bot, user, original_prompt, final_prompt, s, candidates, hidden_vibe_applied)
             images = await asyncio.wait_for(
@@ -1360,6 +1471,8 @@ async def generate_image_from_prompt(
                     parse_mode="HTML",
                     reply_markup=after_generation_menu(),
                 )
+        commit_generation_credit(credit_reservation)
+        credit_committed = True
 
     except asyncio.TimeoutError:
         await wait.edit_text(
@@ -1378,6 +1491,8 @@ async def generate_image_from_prompt(
             reply_markup=main_menu(),
         )
     finally:
+        if not credit_committed:
+            rollback_generation_credit(credit_reservation)
         if counted:
             generation_waiting = max(0, generation_waiting - 1)
 
@@ -1551,7 +1666,7 @@ def _admin_user_summary(user_id: int) -> str:
         f"🆔 ID: <code>{user_id}</code>\n"
         f"🔗 Username: <code>@{html.escape(username) if username != '-' else '-'}</code>\n"
         f"👤 Full name: <code>{html.escape(full_name)}</code>\n"
-        f"💎 Balance: <code>{int(raw.get('paid_generations_balance', 0) or 0)}</code>\n"
+        f"✒️ Чернила: <code>{int(raw.get('paid_generations_balance', 0) or 0)}</code>\n"
         f"🖼 Total generations: <code>{len(history)}</code>\n"
         f"📅 Daily usage: <code>{daily}</code>\n"
         f"📚 History count: <code>{len(history)}</code>\n"
@@ -1718,7 +1833,7 @@ async def cb_admin_panel(call: types.CallbackQuery):
     elif action == "dict":
         await call.message.edit_text("📚 <b>Dictionary</b>", parse_mode="HTML", reply_markup=dictionary_menu())
     elif action == "purchases":
-        await call.message.edit_text("💎 <b>Покупки / генерации</b>", parse_mode="HTML", reply_markup=admin_purchases_menu())
+        await call.message.edit_text("💎 <b>Платежи</b>", parse_mode="HTML", reply_markup=admin_purchases_menu())
     elif action == "users":
         await call.message.edit_text("👥 <b>Пользователи</b>", parse_mode="HTML", reply_markup=admin_users_menu())
     elif action == "broadcast":
@@ -1938,6 +2053,10 @@ async def cb_admin_purchases(call: types.CallbackQuery, state: FSMContext):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     action = call.data.split(":", 1)[1]
+    if action == "payments":
+        await call.message.answer(admin_payments_text(), parse_mode="HTML", reply_markup=admin_purchases_menu())
+        await call.answer()
+        return
     await state.update_data(admin_purchase_action=action)
     await state.set_state(GenState.waiting_purchase_user_id)
     await call.message.answer("Пришли user_id.", reply_markup=admin_purchases_menu())
@@ -1963,7 +2082,7 @@ async def admin_purchase_user_id(message: types.Message, state: FSMContext):
         await message.answer(_admin_user_summary(user_id), parse_mode="HTML", reply_markup=admin_purchases_menu())
         return
     await state.set_state(GenState.waiting_purchase_amount)
-    await message.answer("Пришли amount числом.", reply_markup=admin_purchases_menu())
+    await message.answer("Пришли количество Чернил числом.", reply_markup=admin_purchases_menu())
 
 
 @dp.message(GenState.waiting_purchase_amount)
@@ -1975,14 +2094,15 @@ async def admin_purchase_amount(message: types.Message, state: FSMContext):
     try:
         amount = abs(int((message.text or "").strip()))
     except ValueError:
-        await message.answer("Нужен amount числом.", reply_markup=admin_purchases_menu())
+        await message.answer("Нужно количество Чернил числом.", reply_markup=admin_purchases_menu())
         return
     data = await state.get_data()
     user_id = int(data.get("admin_purchase_user_id"))
     delta = amount if data.get("admin_purchase_action") == "add" else -amount
     balance = adjust_paid_generations_balance(user_id, delta)
+    _manual_payment_record(message.from_user.id, user_id, delta, balance)
     await state.clear()
-    await message.answer(f"✅ Баланс пользователя <code>{user_id}</code>: <code>{balance}</code>", parse_mode="HTML", reply_markup=admin_purchases_menu())
+    await message.answer(f"✅ Изменено:\n{delta:+d} ✒️\n\nБаланс пользователя <code>{user_id}</code>: <code>{balance}</code> ✒️", parse_mode="HTML", reply_markup=admin_purchases_menu())
 
 
 @dp.callback_query(F.data.startswith("admin_users:"))
@@ -2291,10 +2411,78 @@ async def cb_prompt_ar_vibe(call: types.CallbackQuery):
     await call.answer(f"ArtRaccoon vibe: {'ON' if s.artraccoon_vibe_enabled else 'OFF'}")
 
 
+@dp.message(Command("buy"))
+async def buy_cmd(message: types.Message):
+    await message.answer(purchase_text(message.from_user.id), parse_mode="HTML", reply_markup=purchase_menu())
+
+@dp.message(Command("balance"))
+async def balance_cmd(message: types.Message):
+    await message.answer(user_balance_text(message.from_user.id), parse_mode="HTML", reply_markup=purchase_menu())
+
 @dp.callback_query(F.data.startswith("paid:"))
-async def cb_paid_placeholder(call: types.CallbackQuery):
-    await call.message.answer(PAID_PLACEHOLDER, reply_markup=main_menu())
+async def cb_paid(call: types.CallbackQuery):
+    parts = call.data.split(":")
+    action = parts[1] if len(parts) > 1 else "buy"
+    if action == "buy":
+        await call.message.answer(purchase_text(call.from_user.id), parse_mode="HTML", reply_markup=purchase_menu())
+    elif action == "balance":
+        await call.message.answer(user_balance_text(call.from_user.id), parse_mode="HTML", reply_markup=purchase_menu())
+    elif action == "pkg" and len(parts) >= 3:
+        pkg = PAYMENT_PACKAGES.get(parts[2])
+        if not pkg:
+            await call.answer("Пакет не найден", show_alert=True)
+            return
+        await call.message.bot.send_invoice(
+            chat_id=call.message.chat.id,
+            title=pkg["title"],
+            description=pkg["description"],
+            payload=make_payment_payload(call.from_user.id, pkg["id"]),
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label=pkg["title"], amount=int(pkg["stars_price"]))],
+            start_parameter=pkg["id"],
+        )
+    else:
+        await call.message.answer(PAID_PLACEHOLDER, reply_markup=main_menu())
     await call.answer()
+
+@dp.pre_checkout_query()
+async def pre_checkout_handler(query: types.PreCheckoutQuery):
+    try:
+        payload_user_id, package_id = parse_payment_payload(query.invoice_payload)
+        pkg = PAYMENT_PACKAGES.get(package_id)
+        if not pkg or payload_user_id != query.from_user.id or query.currency != "XTR" or int(query.total_amount) != int(pkg["stars_price"]):
+            await query.answer(ok=False, error_message="Платёж не прошёл проверку. Попробуй выбрать пакет заново.")
+            return
+        await query.answer(ok=True)
+    except Exception:
+        await query.answer(ok=False, error_message="Некорректные данные платежа.")
+
+@dp.message(F.successful_payment)
+async def successful_payment_handler(message: types.Message):
+    payment = message.successful_payment
+    try:
+        payload_user_id, package_id = parse_payment_payload(payment.invoice_payload)
+        pkg = PAYMENT_PACKAGES.get(package_id)
+        if not pkg or payload_user_id != message.from_user.id or payment.currency != "XTR" or int(payment.total_amount) != int(pkg["stars_price"]):
+            await message.answer("❌ Платёж получен, но не прошёл проверку. Напиши в поддержку: /support")
+            return
+        charge_id = str(payment.telegram_payment_charge_id or "")
+        payment_id = f"telegram_stars:{charge_id}"
+        credited, balance = record_successful_stars_payment_once(
+            message.from_user.id,
+            pkg,
+            payment_id,
+            charge_id,
+            {"invoice_payload": payment.invoice_payload},
+        )
+        if not credited:
+            await message.answer("✅ Этот платёж уже был зачислен.\n" + user_balance_text(message.from_user.id), parse_mode="HTML", reply_markup=purchase_menu())
+            return
+        await message.answer(f"✅ Оплата прошла успешно!\n\nНачислено:\n{pkg['ink_amount']} ✒️ Чернил\n\nБаланс:\n{balance} ✒️ Чернил", reply_markup=main_menu())
+    except Exception:
+        log.exception("Failed to process successful payment")
+        await message.answer("❌ Не удалось зачислить платёж автоматически. Напиши в поддержку: /support")
 
 @dp.callback_query(F.data == "prompt:cancel")
 async def cb_prompt_cancel(call: types.CallbackQuery):

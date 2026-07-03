@@ -6,9 +6,10 @@ from pathlib import Path
 
 from config_defaults import MODELS, NOISE_SCHEDULES, SAMPLERS, UC_PRESETS, UserSettings
 from storage import get_config_value, get_settings, patch_settings
+from services.payments import INK_PER_GENERATION
 
 SAFE_RESOLUTIONS = {(512, 768), (768, 1344), (832, 1216), (1024, 1024), (1216, 832)}
-DAILY_GENERATION_LIMIT = 50
+DAILY_GENERATION_LIMIT = 10
 NON_ADMIN_COOLDOWN_SECONDS = 60
 GENERATION_TIMEOUT_SECONDS = 180
 TMP_DIR = Path("data/tmp_images")
@@ -122,20 +123,60 @@ def daily_count_for(s) -> int:
     return max(legacy, current)
 
 
-def remaining_generations(user_id: int, admin_ids: list[int]) -> int | None:
+def free_remaining_today(user_id: int, admin_ids: list[int]) -> int | None:
     if user_id in admin_ids:
         return None
     return max(0, DAILY_GENERATION_LIMIT - daily_count_for(get_settings(user_id)))
 
 
+def remaining_generations(user_id: int, admin_ids: list[int]) -> int | None:
+    """Legacy alias for the free daily generations remaining today."""
+    return free_remaining_today(user_id, admin_ids)
+
+
 def mark_generation_started(user_id: int, admin_ids: list[int]) -> None:
+    """Legacy compatibility shim; new generation flow must use reserve/commit/rollback."""
+    reservation = reserve_generation_credit(user_id, admin_ids)
+    commit_generation_credit(reservation)
+
+
+def reserve_generation_credit(user_id: int, admin_ids: list[int]) -> dict:
     s = get_settings(user_id)
-    updates = {"last_generation_started_at": datetime.now(timezone.utc).isoformat()}
-    if user_id not in admin_ids:
+    if user_id in admin_ids:
+        patch_settings(user_id, last_generation_started_at=datetime.now(timezone.utc).isoformat())
+        return {"user_id": user_id, "kind": "admin"}
+    if daily_count_for(s) < DAILY_GENERATION_LIMIT:
+        patch_settings(user_id, last_generation_started_at=datetime.now(timezone.utc).isoformat())
+        return {"user_id": user_id, "kind": "free"}
+    if int(s.paid_generations_balance or 0) >= INK_PER_GENERATION:
+        patch_settings(user_id, paid_generations_balance=int(s.paid_generations_balance or 0) - INK_PER_GENERATION, last_generation_started_at=datetime.now(timezone.utc).isoformat())
+        return {"user_id": user_id, "kind": "paid"}
+    return {"user_id": user_id, "kind": "none"}
+
+
+def commit_generation_credit(reservation: dict) -> None:
+    user_id = int(reservation.get("user_id", 0) or 0)
+    kind = reservation.get("kind")
+    if not user_id or kind in {"admin", "none"}:
+        return
+    s = get_settings(user_id)
+    updates = {"total_generations_used": int(s.total_generations_used or 0) + 1}
+    if kind == "free":
         used = daily_count_for(s) + 1
         updates.update({"daily_generation_date": today_key(), "daily_generation_count": used, "free_daily_date": today_key(), "free_daily_used": used})
-    updates["total_generations_used"] = int(s.total_generations_used or 0) + 1
+    elif kind == "paid":
+        updates["paid_generations_used"] = int(s.paid_generations_used or 0) + 1
     patch_settings(user_id, **updates)
+
+
+def rollback_generation_credit(reservation: dict) -> None:
+    if reservation.get("kind") != "paid":
+        return
+    user_id = int(reservation.get("user_id", 0) or 0)
+    if not user_id:
+        return
+    s = get_settings(user_id)
+    patch_settings(user_id, paid_generations_balance=int(s.paid_generations_balance or 0) + INK_PER_GENERATION)
 
 
 def cooldown_remaining(user_id: int, admin_ids: list[int]) -> int:
