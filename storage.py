@@ -326,3 +326,41 @@ def credit_paid_generations(user_id: int, ink_amount: int, stars: int = 0) -> in
         user["total_paid_stars"] = int(user.get("total_paid_stars", 0) or 0) + int(stars)
         _save_all_unlocked(data)
         return int(user["paid_generations_balance"])
+
+
+def record_successful_stars_payment_once(user_id: int, package: dict, payment_id: str, charge_id: str, raw_metadata: dict | None = None) -> tuple[bool, int]:
+    with _STORAGE_LOCK:
+        uid = int(user_id)
+        pid = str(payment_id or "")
+        records = _load_payments_unlocked()
+        data = _load_all_unlocked()
+        user = data.setdefault(str(uid), _default_user())
+        current_balance = int(user.get("paid_generations_balance", 0) or 0)
+        if pid and any(str(item.get("payment_id")) == pid for item in records if isinstance(item, dict)):
+            return False, current_balance
+
+        ink_amount = int(package.get("ink_amount", package.get("generations", 0)) or 0)
+        stars_price = int(package.get("stars_price", 0) or 0)
+        new_balance = current_balance + ink_amount
+        user["paid_generations_balance"] = new_balance
+        user["total_paid_stars"] = int(user.get("total_paid_stars", 0) or 0) + stars_price
+
+        now = datetime.now(timezone.utc).isoformat()
+        records.insert(0, {
+            "payment_id": pid,
+            "provider": "telegram_stars",
+            "telegram_payment_charge_id": str(charge_id or ""),
+            "user_id": uid,
+            "package_id": str(package.get("id") or ""),
+            "generations": int(package.get("generations", 0) or 0),
+            "ink_amount": ink_amount,
+            "amount": stars_price,
+            "currency": "XTR",
+            "status": "succeeded",
+            "created_at": now,
+            "paid_at": now,
+            "metadata": dict(raw_metadata or {}),
+        })
+        _save_payments_unlocked(records)
+        _save_all_unlocked(data)
+        return True, new_balance

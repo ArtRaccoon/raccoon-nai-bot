@@ -36,13 +36,13 @@ from storage import (
     get_settings, save_settings, patch_settings, add_history, get_history,
     add_favorite, get_favorites, delete_favorite, set_last_metadata, get_last_metadata,
     set_last_payload, get_last_payload, get_config_value, set_config_value, delete_config_value,
-    load_all_users_for_admin_stats, get_user_record_for_admin, adjust_paid_generations_balance, clear_user_draft_for_admin, update_user_identity, add_payment_record, payment_exists, get_recent_payments, credit_paid_generations
+    load_all_users_for_admin_stats, get_user_record_for_admin, adjust_paid_generations_balance, clear_user_draft_for_admin, update_user_identity, add_payment_record, get_recent_payments, record_successful_stars_payment_once
 )
 
 from services.generation import (
     DAILY_GENERATION_LIMIT, GENERATION_TIMEOUT_SECONDS, SAFE_RESOLUTIONS, apply_anlas_safe_defaults as _apply_anlas_safe_defaults,
     ar_payload_mode as _ar_payload_mode, artraccoon_prompt_defaults, assemble_ar_prompt, cooldown_remaining as _cooldown_remaining,
-    mark_generation_started as _mark_generation_started, remaining_generations as _remaining_generations, reserve_generation_credit as _reserve_generation_credit, commit_generation_credit as _commit_generation_credit, rollback_generation_credit as _rollback_generation_credit,
+    remaining_generations as _remaining_generations, free_remaining_today as _free_remaining_today, reserve_generation_credit as _reserve_generation_credit, commit_generation_credit as _commit_generation_credit, rollback_generation_credit as _rollback_generation_credit,
     basic_defaults_from_settings, factory_basic_defaults, safe_existing_generated_path, safe_generation_defaults, saved_basic_defaults, sanitize_basic_defaults, save_generated_images,
 )
 from services.payments import INK_PER_GENERATION, PAYMENT_PACKAGES, make_payment_payload, parse_payment_payload
@@ -125,8 +125,8 @@ def remaining_generations(user_id: int) -> int | None:
     return _remaining_generations(user_id, ADMIN_IDS)
 
 
-def mark_generation_started(user_id: int) -> None:
-    _mark_generation_started(user_id, ADMIN_IDS)
+def free_remaining_today(user_id: int) -> int | None:
+    return _free_remaining_today(user_id, ADMIN_IDS)
 
 def reserve_generation_credit(user_id: int) -> dict:
     return _reserve_generation_credit(user_id, ADMIN_IDS)
@@ -577,7 +577,7 @@ async def show_pending_prompt(message: types.Message, user_id: int) -> None:
     if not s.pending_prompt:
         await message.answer(PROMPT_EMPTY_TEXT, reply_markup=main_menu())
         return
-    preview = art_prompt_preview_text(s) if s.artraccoon_mode else prompt_preview_text(s.pending_prompt, s.pending_original_prompt, s, remaining_generations(user_id))
+    preview = art_prompt_preview_text(s) if s.artraccoon_mode else prompt_preview_text(s.pending_prompt, s.pending_original_prompt, s, free_remaining_today(user_id))
     await message.answer(
         preview,
         parse_mode="HTML",
@@ -586,13 +586,13 @@ async def show_pending_prompt(message: types.Message, user_id: int) -> None:
 
 
 def howto_text(user_id: int | None = None) -> str:
-    remaining = remaining_generations(user_id) if user_id is not None else None
+    remaining = free_remaining_today(user_id) if user_id is not None else None
     return branded_howto_text(remaining, DAILY_GENERATION_LIMIT)
 
 
 def user_balance_text(user_id: int) -> str:
     st = get_settings(user_id)
-    free_left = "∞" if user_id in ADMIN_IDS else str(remaining_generations(user_id))
+    free_left = "∞" if user_id in ADMIN_IDS else str(free_remaining_today(user_id))
     return (
         "📦 <b>Мой баланс</b>\n\n"
         f"🖌 Бесплатно сегодня: <code>{free_left}</code> / <code>{DAILY_GENERATION_LIMIT}</code>\n"
@@ -701,7 +701,7 @@ async def retry_last_prompt(message: types.Message, actor: types.User | None = N
 async def start(message: types.Message):
     get_settings(message.from_user.id)
     await message.answer(
-        start_text(remaining_generations(message.from_user.id), DAILY_GENERATION_LIMIT, message.from_user.id in ADMIN_IDS),
+        start_text(free_remaining_today(message.from_user.id), DAILY_GENERATION_LIMIT, message.from_user.id in ADMIN_IDS),
         reply_markup=main_menu(),
         parse_mode="HTML",
     )
@@ -978,7 +978,11 @@ async def grant_cmd(message: types.Message):
     if len(parts) != 3:
         await message.answer("Использование: /grant <user_id> <ink_amount>")
         return
-    user_id, amount = int(parts[1]), abs(int(parts[2]))
+    try:
+        user_id, amount = int(parts[1]), abs(int(parts[2]))
+    except (TypeError, ValueError):
+        await message.answer("Использование: /grant <user_id> <ink_amount>")
+        return
     balance = adjust_paid_generations_balance(user_id, amount)
     _manual_payment_record(message.from_user.id, user_id, amount, balance)
     await message.answer(f"✅ Начислено:\n+{amount} ✒️\n\nБаланс пользователя <code>{user_id}</code>: <code>{balance}</code> ✒️", parse_mode="HTML", reply_markup=admin_purchases_menu())
@@ -992,7 +996,11 @@ async def take_cmd(message: types.Message):
     if len(parts) != 3:
         await message.answer("Использование: /take <user_id> <ink_amount>")
         return
-    user_id, amount = int(parts[1]), abs(int(parts[2]))
+    try:
+        user_id, amount = int(parts[1]), abs(int(parts[2]))
+    except (TypeError, ValueError):
+        await message.answer("Использование: /take <user_id> <ink_amount>")
+        return
     balance = adjust_paid_generations_balance(user_id, -amount)
     _manual_payment_record(message.from_user.id, user_id, -amount, balance)
     await message.answer(f"✅ Списано:\n-{amount} ✒️\n\nБаланс пользователя <code>{user_id}</code>: <code>{balance}</code> ✒️", parse_mode="HTML", reply_markup=admin_purchases_menu())
@@ -1361,7 +1369,7 @@ async def generate_image_from_prompt(
 
     user_id = user.id
     st = get_settings(user_id)
-    if user_id not in ADMIN_IDS and remaining_generations(user_id) == 0 and int(st.paid_generations_balance or 0) < INK_PER_GENERATION:
+    if user_id not in ADMIN_IDS and free_remaining_today(user_id) == 0 and int(st.paid_generations_balance or 0) < INK_PER_GENERATION:
         await message.answer(DAILY_LIMIT_TEXT, reply_markup=limit_exhausted_menu())
         return
 
@@ -2461,26 +2469,16 @@ async def successful_payment_handler(message: types.Message):
             return
         charge_id = str(payment.telegram_payment_charge_id or "")
         payment_id = f"telegram_stars:{charge_id}"
-        if payment_exists(payment_id):
+        credited, balance = record_successful_stars_payment_once(
+            message.from_user.id,
+            pkg,
+            payment_id,
+            charge_id,
+            {"invoice_payload": payment.invoice_payload},
+        )
+        if not credited:
             await message.answer("✅ Этот платёж уже был зачислен.\n" + user_balance_text(message.from_user.id), parse_mode="HTML", reply_markup=purchase_menu())
             return
-        now = datetime.now(timezone.utc).isoformat()
-        balance = credit_paid_generations(message.from_user.id, int(pkg["ink_amount"]), int(pkg["stars_price"]))
-        add_payment_record({
-            "payment_id": payment_id,
-            "provider": "telegram_stars",
-            "telegram_payment_charge_id": charge_id,
-            "user_id": int(message.from_user.id),
-            "package_id": package_id,
-            "generations": int(pkg["generations"]),
-            "ink_amount": int(pkg["ink_amount"]),
-            "amount": int(pkg["stars_price"]),
-            "currency": "XTR",
-            "status": "succeeded",
-            "created_at": now,
-            "paid_at": now,
-            "metadata": {"invoice_payload": payment.invoice_payload},
-        })
         await message.answer(f"✅ Оплата прошла успешно!\n\nНачислено:\n{pkg['ink_amount']} ✒️ Чернил\n\nБаланс:\n{balance} ✒️ Чернил", reply_markup=main_menu())
     except Exception:
         log.exception("Failed to process successful payment")

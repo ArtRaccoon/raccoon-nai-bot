@@ -123,13 +123,19 @@ def daily_count_for(s) -> int:
     return max(legacy, current)
 
 
-def remaining_generations(user_id: int, admin_ids: list[int]) -> int | None:
+def free_remaining_today(user_id: int, admin_ids: list[int]) -> int | None:
     if user_id in admin_ids:
         return None
     return max(0, DAILY_GENERATION_LIMIT - daily_count_for(get_settings(user_id)))
 
 
+def remaining_generations(user_id: int, admin_ids: list[int]) -> int | None:
+    """Legacy alias for the free daily generations remaining today."""
+    return free_remaining_today(user_id, admin_ids)
+
+
 def mark_generation_started(user_id: int, admin_ids: list[int]) -> None:
+    """Legacy compatibility shim; new generation flow must use reserve/commit/rollback."""
     reservation = reserve_generation_credit(user_id, admin_ids)
     commit_generation_credit(reservation)
 
