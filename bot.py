@@ -19,10 +19,11 @@ from dotenv import load_dotenv
 
 from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRESETS, NOISE_SCHEDULES, AELITA_DESCRIPTION, UserSettings, MAX_EXTRA_CHARACTERS
 from keyboards import (
-    main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
+    main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu, provider_menu,
     after_generation_menu, generation_item_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu, moderation_dictionary_menu, dictionary_menu, dictionary_pending_menu, admin_panel_menu,
     admin_ar_vibe_menu, admin_nai_debug_menu, admin_site_clone_menu, registry_fields_text, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu, characters_menu, purchase_menu, limit_exhausted_menu,
 )
+from app.services.fal_client import FalImageClient, FalImageError
 from app.services.nai_client import (
     NovelAIClient, NovelAIError, sanitize_payload,
     SITE_MODE_STEPS, SITE_MODE_SCALE, SITE_MODE_CFG_RESCALE, SITE_MODE_SAMPLER, SITE_MODE_NOISE_SCHEDULE,
@@ -69,6 +70,10 @@ SUPPORT_GROUP_ID = int(SUPPORT_GROUP_ID_RAW) if SUPPORT_GROUP_ID_RAW.lstrip("-")
 SUPPORT_URL = os.getenv("SUPPORT_URL", "").strip()
 MODERATION_CHANNEL_ID_RAW = os.getenv("MODERATION_CHANNEL_ID", "").strip()
 MODERATION_CHANNEL_ID = int(MODERATION_CHANNEL_ID_RAW) if MODERATION_CHANNEL_ID_RAW.lstrip("-").isdigit() else None
+FAL_ENABLED = os.getenv("FAL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+FAL_KEY = os.getenv("FAL_KEY", "").strip()
+FAL_DEFAULT_MODEL = os.getenv("FAL_DEFAULT_MODEL", "fal-ai/flux/dev").strip() or "fal-ai/flux/dev"
+FAL_TIMEOUT_SECONDS = int(os.getenv("FAL_TIMEOUT_SECONDS", "180") or 180)
 
 ADMIN_IDS = [
     int(x.strip())
@@ -115,6 +120,10 @@ dp.message.middleware(UserIdentityMiddleware())
 dp.message.middleware(GroupMessageGuardMiddleware())
 dp.callback_query.middleware(UserIdentityMiddleware())
 nai = NovelAIClient(NOVELAI_TOKEN, default_model=NAI_MODEL, proxy_url=PROXY_URL)
+fal_image = FalImageClient(FAL_KEY, FAL_DEFAULT_MODEL, timeout=FAL_TIMEOUT_SECONDS)
+
+def fal_available() -> bool:
+    return bool(FAL_ENABLED and FAL_KEY)
 
 
 def ar_payload_mode(s) -> str:
@@ -474,7 +483,8 @@ def moderation_metadata_text(
         "🚫 <b>Negative prompt</b>\n"
         f"{_blockquote(s.negative_prompt or '—', 1800)}\n"
         "⚙️ <b>Settings</b>\n"
-        f"Model: <code>{html.escape(s.model_name)}</code>\n"
+        f"Provider: <code>{html.escape('fal.ai' if getattr(s, 'generation_provider', 'novelai') == 'fal' else 'NovelAI')}</code>\n"
+        f"Model: <code>{html.escape(getattr(s, 'fal_model', 'fal-ai/flux/dev') if getattr(s, 'generation_provider', 'novelai') == 'fal' else s.model_name)}</code>\n"
         f"Size: <code>{s.width}x{s.height}</code>\n"
         f"Sampler: <code>{html.escape(s.sampler)}</code>\n"
         f"Steps: <code>{s.steps}</code>\n"
@@ -627,7 +637,9 @@ def settings_text(user_id: int) -> str:
     s = get_settings(user_id)
     return (
         "⚙️ <b>Текущие настройки</b>\n\n"
+        f"Движок: <code>{s.generation_provider}</code>\n"
         f"Модель: <code>{s.model_name}</code>\n"
+        f"fal.ai model: <code>{s.fal_model}</code>\n"
         f"Размер: <code>{s.width}x{s.height}</code>\n"
         f"Режим: <code>{'ArtRaccoon' if s.artraccoon_mode else ('PRO' if s.pro_mode else 'Обычный')}</code>\n"
         f"Картинок: <code>{s.n_samples}</code>\n"
@@ -647,6 +659,26 @@ def settings_text(user_id: int) -> str:
         f"Промт переведён из русского: <code>{bool(s.pending_original_prompt and s.pending_original_prompt != s.pending_prompt)}</code>"
     )
 
+
+
+def provider_text(user_id: int) -> str:
+    s = get_settings(user_id)
+    current = "fal.ai" if s.generation_provider == "fal" else "NovelAI"
+    status = "настроен" if fal_available() else "не настроен"
+    return (
+        "🎨 <b>Движок генерации</b>\n\n"
+        f"Текущий: <code>{html.escape(current)}</code>\n"
+        f"fal.ai: <code>{status}</code>\n"
+        f"fal.ai model: <code>{html.escape(s.fal_model or FAL_DEFAULT_MODEL)}</code>"
+    )
+
+async def show_provider_menu(message: types.Message, user_id: int, *, edit: bool = False) -> None:
+    text = provider_text(user_id)
+    markup = provider_menu(get_settings(user_id).generation_provider, fal_available())
+    if edit:
+        await message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+    else:
+        await message.answer(text, parse_mode="HTML", reply_markup=markup)
 
 def settings_markup_for(user_id: int):
     s = get_settings(user_id)
@@ -1383,10 +1415,19 @@ async def generate_image_from_prompt(
     original_prompt = s.pending_original_prompt or prompt
     visible_prompt = prompt
     generation_prompt, hidden_vibe_applied = visible_prompt_with_optional_vibe(user_id, visible_prompt)
-    try:
-        final_prompt = nai.build_prompt(generation_prompt, s)
-    except Exception:
+    provider = s.generation_provider if s.generation_provider in {"novelai", "fal"} else "novelai"
+    if provider == "fal":
+        if not fal_available():
+            await message.answer("fal.ai пока не настроен.", reply_markup=main_menu())
+            return
+        if not s.fal_model:
+            s = patch_settings(user_id, fal_model=FAL_DEFAULT_MODEL)
         final_prompt = generation_prompt
+    else:
+        try:
+            final_prompt = nai.build_prompt(generation_prompt, s)
+        except Exception:
+            final_prompt = generation_prompt
 
     global generation_waiting
     if generation_lock.locked() or generation_waiting:
@@ -1421,16 +1462,30 @@ async def generate_image_from_prompt(
                 return
             candidates = learn_from_english_prompt(visible_prompt) if looks_like_english_tags(visible_prompt) else []
             await send_moderation_copy(message.bot, user, original_prompt, final_prompt, s, candidates, hidden_vibe_applied)
-            images = await asyncio.wait_for(
-                nai.generate(
+            if provider == "fal":
+                if image_bytes:
+                    raise FalImageError("fal.ai provider currently supports text-to-image only")
+                images = await fal_image.generate_image(
                     generation_prompt,
-                    s,
-                    image_bytes=image_bytes,
-                    on_character_payload_fallback=show_character_payload_fallback,
-                ),
-                timeout=GENERATION_TIMEOUT_SECONDS,
-            )
-            set_last_payload(user_id, sanitize_payload(nai.last_payload))
+                    negative_prompt=s.negative_prompt,
+                    width=s.width,
+                    height=s.height,
+                    steps=s.steps,
+                    guidance_scale=s.scale,
+                    seed=s.seed,
+                    model=s.fal_model or FAL_DEFAULT_MODEL,
+                )
+            else:
+                images = await asyncio.wait_for(
+                    nai.generate(
+                        generation_prompt,
+                        s,
+                        image_bytes=image_bytes,
+                        on_character_payload_fallback=show_character_payload_fallback,
+                    ),
+                    timeout=GENERATION_TIMEOUT_SECONDS,
+                )
+                set_last_payload(user_id, sanitize_payload(nai.last_payload))
         timestamp = datetime.now(timezone.utc).isoformat()
         saved_images = save_generated_images(user_id, timestamp, images)
         history_item = {
@@ -1439,7 +1494,8 @@ async def generate_image_from_prompt(
             "final_prompt": visible_prompt,
             "negative_prompt": s.negative_prompt,
             "seed": s.seed,
-            "model": s.model_name,
+            "provider": provider,
+            "model": s.fal_model if provider == "fal" else s.model_name,
             "size": f"{s.width}x{s.height}",
             "timestamp": timestamp,
             "image": {"count": len(images), "format": "png"} if images else {},
@@ -1453,9 +1509,10 @@ async def generate_image_from_prompt(
         await send_moderation_images(message.bot, user, images, original_prompt, final_prompt, s, candidates, hidden_vibe_applied)
 
         for idx, img in enumerate(images, start=1):
-            name = f"novelai_{idx}.png"
+            name = f"{provider}_{idx}.png"
             image = BufferedInputFile(img, filename=name)
-            caption = generation_result_caption(s.model_name, s.width, s.height, s.seed)
+            caption_model = s.fal_model if provider == "fal" else s.model_name
+            caption = generation_result_caption(caption_model, s.width, s.height, s.seed)
             try:
                 await message.answer_photo(
                     image,
@@ -1484,6 +1541,11 @@ async def generate_image_from_prompt(
             f"❌ NovelAI не смог сгенерировать изображение. {str(e)[:3300]}",
             reply_markup=main_menu(),
         )
+    except FalImageError as e:
+        await wait.edit_text(
+            f"❌ fal.ai не смог сгенерировать изображение. {str(e)[:3300]}",
+            reply_markup=main_menu(),
+        )
     except Exception:
         log.exception("Generation failed")
         await wait.edit_text(
@@ -1496,6 +1558,11 @@ async def generate_image_from_prompt(
         if counted:
             generation_waiting = max(0, generation_waiting - 1)
 
+
+
+@dp.message(Command("provider"))
+async def provider_cmd(message: types.Message):
+    await show_provider_menu(message, message.from_user.id)
 
 @dp.message(Command("gen"))
 async def gen_cmd(message: types.Message):
@@ -1672,6 +1739,8 @@ def _admin_user_summary(user_id: int) -> str:
         f"📚 History count: <code>{len(history)}</code>\n"
         f"⭐ Favorites count: <code>{len(favorites)}</code>\n"
         f"🦝 ArtRaccoon vibe enabled: <code>{bool(raw.get('artraccoon_vibe_enabled'))}</code>\n"
+        f"🎨 generation_provider: <code>{html.escape(str(raw.get('generation_provider', 'novelai')))}</code>\n"
+        f"⚡ fal_model: <code>{html.escape(str(raw.get('fal_model', FAL_DEFAULT_MODEL)))}</code>\n"
         f"🕘 Last seen: <code>{html.escape(str(raw.get('last_seen_at') or '—'))}</code>"
     )
 
@@ -2489,6 +2558,30 @@ async def cb_prompt_cancel(call: types.CallbackQuery):
     patch_settings(call.from_user.id, pending_prompt="", pending_original_prompt="", prompt_action="")
     await call.message.answer(CANCEL_TEXT, reply_markup=main_menu())
     await call.answer("Отменено")
+
+
+@dp.callback_query(F.data == "settings:provider")
+async def cb_settings_provider(call: types.CallbackQuery):
+    await show_provider_menu(call.message, call.from_user.id, edit=True)
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("provider:set:"))
+async def cb_provider_set(call: types.CallbackQuery):
+    provider = call.data.split(":", 2)[2]
+    if provider == "fal" and not fal_available():
+        await call.answer("fal.ai пока не настроен.", show_alert=True)
+        await call.message.answer("fal.ai пока не настроен.", reply_markup=main_menu())
+        return
+    if provider not in {"novelai", "fal"}:
+        await call.answer("Неизвестный движок", show_alert=True)
+        return
+    updates = {"generation_provider": provider}
+    if provider == "fal" and not get_settings(call.from_user.id).fal_model:
+        updates["fal_model"] = FAL_DEFAULT_MODEL
+    patch_settings(call.from_user.id, **updates)
+    await show_provider_menu(call.message, call.from_user.id, edit=True)
+    await call.answer("Движок обновлён")
 
 @dp.callback_query(F.data.startswith("settings:"))
 async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):

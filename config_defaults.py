@@ -92,6 +92,8 @@ UC_PRESETS = {
 @dataclass
 class UserSettings:
     model_name: str = "V4.5 Full"
+    generation_provider: str = "novelai"
+    fal_model: str = "fal-ai/flux/dev"
     width: int = 832
     height: int = 1216
     steps: int = 23
