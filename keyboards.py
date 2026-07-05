@@ -102,6 +102,7 @@ def presets_menu() -> InlineKeyboardMarkup:
 
 def settings_menu(pro: bool = True, show_pro_button: bool = True) -> InlineKeyboardMarkup:
     buttons = [
+        InlineKeyboardButton(text="🎨 Движок", callback_data="settings:provider"),
         InlineKeyboardButton(text="📐 Размер", callback_data="settings:size"),
         InlineKeyboardButton(text="👣 Шаги", callback_data="settings:steps"),
         InlineKeyboardButton(text="🧲 CFG / сила промта", callback_data="settings:scale"),
@@ -127,6 +128,17 @@ def settings_menu(pro: bool = True, show_pro_button: bool = True) -> InlineKeybo
         main_menu_button(),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
+
+def provider_menu(current: str = "novelai", fal_available: bool = False) -> InlineKeyboardMarkup:
+    nai_prefix = "✅ " if current == "novelai" else ""
+    fal_prefix = "✅ " if current == "fal" else ""
+    fal_text = f"{fal_prefix}⚡ fal.ai" if fal_available else "⚡ fal.ai (недоступен)"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{nai_prefix}🦝 NovelAI", callback_data="provider:set:novelai")],
+        [InlineKeyboardButton(text=fal_text, callback_data="provider:set:fal")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings")],
+        [main_menu_button()],
+    ])
 
 def confirm_reset_menu(kind: str = "settings") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
