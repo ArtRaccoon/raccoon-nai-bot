@@ -37,6 +37,21 @@ def _save_all_unlocked(data: dict) -> None:
     tmp.replace(USERS_FILE)
 
 
+
+def _migrate_legacy_generation_fields(user: dict) -> bool:
+    """Normalize deprecated generation fields in a stored user record."""
+    changed = False
+    if user.get("pro_mode") and "advanced_generation_mode" not in user:
+        user["advanced_generation_mode"] = True
+        changed = True
+    if user.get("pro_mode"):
+        user["pro_mode"] = False
+        changed = True
+    if user.get("generation_provider") == "fal":
+        user["generation_provider"] = "novelai"
+        changed = True
+    return changed
+
 def _default_user(raw: dict | None = None) -> dict:
     defaults = UserSettings().to_dict()
     if isinstance(raw, dict):
@@ -96,7 +111,11 @@ def save_all(data: dict) -> None:
 
 def get_settings(user_id: int) -> UserSettings:
     with _STORAGE_LOCK:
-        raw = _load_all_unlocked().get(str(user_id), {})
+        data = _load_all_unlocked()
+        raw = data.get(str(user_id), {})
+        if isinstance(raw, dict) and _migrate_legacy_generation_fields(raw):
+            data[str(user_id)] = raw
+            _save_all_unlocked(data)
         defaults = UserSettings().to_dict()
         if isinstance(raw, dict):
             defaults.update({k: v for k, v in raw.items() if k in defaults})
@@ -117,6 +136,7 @@ def patch_settings(user_id: int, **kwargs) -> UserSettings:
         key = str(user_id)
         raw = data.get(key, {})
         user = _default_user(raw if isinstance(raw, dict) else {})
+        _migrate_legacy_generation_fields(user)
         settings_data = {k: v for k, v in user.items() if k in UserSettings().to_dict()}
         settings = UserSettings(**settings_data)
         for field, value in kwargs.items():

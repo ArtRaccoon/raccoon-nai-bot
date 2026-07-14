@@ -92,14 +92,17 @@ UC_PRESETS = {
 @dataclass
 class UserSettings:
     model_name: str = "V4.5 Full"
+    # Deprecated compatibility fields: ignored by active generation flow.
     generation_provider: str = "novelai"
-    fal_model: str = "fal-ai/flux/dev"
+    fal_model: str = ""
     width: int = 832
     height: int = 1216
     steps: int = 23
     scale: float = 4.0
     sampler: str = "k_euler_ancestral"
     n_samples: int = 1
+    advanced_generation_mode: bool = False
+    # Deprecated compatibility field: old saved pro_mode=True is interpreted as advanced_generation_mode=True.
     pro_mode: bool = False
     artraccoon_mode: bool = False
     artraccoon_base_prompt: str = ""
