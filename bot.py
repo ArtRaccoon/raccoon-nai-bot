@@ -153,6 +153,16 @@ def is_advanced_generation_enabled(user_id: int) -> bool:
     return has_moderation_access(user_id) and bool(s.advanced_generation_mode or s.pro_mode)
 
 
+
+def advanced_generation_toggle_updates(current_settings, enabled: bool) -> dict:
+    if enabled:
+        return {"advanced_generation_mode": True, "pro_mode": False}
+    updates = safe_generation_defaults()
+    updates.update({"advanced_generation_mode": False, "pro_mode": False})
+    if getattr(current_settings, "artraccoon_mode", False):
+        updates["artraccoon_mode"] = True
+    return updates
+
 def is_advanced_user(user_id: int) -> bool:
     s = get_settings(user_id)
     return is_advanced_generation_enabled(user_id) or s.artraccoon_mode
@@ -1115,7 +1125,8 @@ async def pro_cmd(message: types.Message):
         await message.answer("Эта функция доступна только модерации.")
         return
     s = get_settings(message.from_user.id)
-    patch_settings(message.from_user.id, advanced_generation_mode=not s.advanced_generation_mode)
+    new_value = not s.advanced_generation_mode
+    patch_settings(message.from_user.id, **advanced_generation_toggle_updates(s, new_value))
     s = get_settings(message.from_user.id)
     await message.answer("⚙️ Расширенный режим включён" if s.advanced_generation_mode else "🌿 Обычный режим включён", reply_markup=settings_markup_for(message.from_user.id))
 
@@ -3211,14 +3222,7 @@ async def toggle_pro(call: types.CallbackQuery):
         return
     s = get_settings(call.from_user.id)
     new_value = not s.advanced_generation_mode
-    updates = {"advanced_generation_mode": new_value}
-    if not new_value:
-        updates["n_samples"] = 1
-        if s.steps > 28:
-            updates["steps"] = 28
-        if (s.width, s.height) not in SAFE_RESOLUTIONS:
-            updates.update({"width": 832, "height": 1216})
-    patch_settings(call.from_user.id, **updates)
+    patch_settings(call.from_user.id, **advanced_generation_toggle_updates(s, new_value))
     await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
     await call.answer("⚙️ Расширенный режим включён" if new_value else "🌿 Обычный режим включён")
 
