@@ -21,7 +21,7 @@ from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRE
 from keyboards import (
     main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
     after_generation_menu, generation_item_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu, moderation_dictionary_menu, dictionary_menu, dictionary_pending_menu, admin_panel_menu,
-    admin_ar_vibe_menu, admin_nai_debug_menu, admin_site_clone_menu, registry_fields_text, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu, characters_menu, purchase_menu, limit_exhausted_menu,
+    admin_ar_vibe_menu, admin_nai_debug_menu, admin_site_clone_menu, registry_fields_text, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu, characters_menu, purchase_menu, limit_exhausted_menu, quick_steps_menu,
 )
 from app.services.nai_client import (
     NovelAIClient, NovelAIError, sanitize_payload,
@@ -40,12 +40,12 @@ from storage import (
 )
 
 from services.generation import (
-    DAILY_GENERATION_LIMIT, GENERATION_TIMEOUT_SECONDS, SAFE_RESOLUTIONS, apply_anlas_safe_defaults as _apply_anlas_safe_defaults,
+    DAILY_GENERATION_LIMIT, RACCOON_PLUS_DAILY_LIMIT, GENERATION_TIMEOUT_SECONDS, SAFE_RESOLUTIONS, apply_anlas_safe_defaults as _apply_anlas_safe_defaults, daily_limit_for as _daily_limit_for, has_raccoon_plus as _has_raccoon_plus,
     ar_payload_mode as _ar_payload_mode, artraccoon_prompt_defaults, assemble_ar_prompt, cooldown_remaining as _cooldown_remaining,
     remaining_generations as _remaining_generations, free_remaining_today as _free_remaining_today, reserve_generation_credit as _reserve_generation_credit, commit_generation_credit as _commit_generation_credit, rollback_generation_credit as _rollback_generation_credit,
     basic_defaults_from_settings, factory_basic_defaults, safe_existing_generated_path, safe_generation_defaults, saved_basic_defaults, sanitize_basic_defaults, save_generated_images,
 )
-from services.payments import INK_PER_GENERATION, PAYMENT_PACKAGES, make_payment_payload, parse_payment_payload
+from services.payments import INK_PER_GENERATION, PAYMENT_PACKAGES, RACCOON_PLUS_PACKAGE, make_payment_payload, parse_payment_payload
 from services.metadata import (
     metadata_settings_summary, metadata_summary, nai_compare_summary_text, parse_nai_metadata,
 )
@@ -149,8 +149,7 @@ def has_moderation_access(user_id: int) -> bool:
 
 
 def is_advanced_generation_enabled(user_id: int) -> bool:
-    s = get_settings(user_id)
-    return has_moderation_access(user_id) and bool(s.advanced_generation_mode or s.pro_mode)
+    return _has_raccoon_plus(user_id, ADMIN_IDS)
 
 
 
@@ -164,8 +163,7 @@ def advanced_generation_toggle_updates(current_settings, enabled: bool) -> dict:
     return updates
 
 def is_advanced_user(user_id: int) -> bool:
-    s = get_settings(user_id)
-    return is_advanced_generation_enabled(user_id) or s.artraccoon_mode
+    return is_advanced_generation_enabled(user_id)
 
 
 def artraccoon_vibe_prompt() -> str:
@@ -204,6 +202,10 @@ class GenState(StatesGroup):
 
 def main_menu():
     return base_main_menu(CHANNEL_URL)
+
+
+def main_menu_for(user_id: int):
+    return base_main_menu(CHANNEL_URL, moderator=has_moderation_access(user_id))
 
 
 SUPPORT_PROMPT_TEXT = (
@@ -610,13 +612,19 @@ def howto_text(user_id: int | None = None) -> str:
 
 def user_balance_text(user_id: int) -> str:
     st = get_settings(user_id)
-    free_left = "∞" if has_moderation_access(user_id) else str(free_remaining_today(user_id))
+    daily_limit = _daily_limit_for(user_id, ADMIN_IDS)
+    free_left = str(free_remaining_today(user_id))
+    plan = "💎 Raccoon+" if is_advanced_user(user_id) else "🌿 Free today"
     return (
         "📦 <b>Мой баланс</b>\n\n"
-        f"🖌 Бесплатно сегодня: <code>{free_left}</code> / <code>{DAILY_GENERATION_LIMIT}</code>\n"
+        f"{plan}\n"
+        f"Today's ordinary: <code>{free_left}</code> / <code>{daily_limit}</code>\n"
+        + (f"HQ: <code>{int(getattr(st, 'hq_balance', 0) or 0)}</code> / <code>100</code>\n" if is_advanced_user(user_id) else "")
+        + (
         f"✒️ Чернила: <code>{int(st.paid_generations_balance or 0)}</code>\n"
         f"Стоимость генерации: <code>{INK_PER_GENERATION}</code> ✒️\n"
         f"Всего оплачено: <code>{int(st.total_paid_stars or 0)}</code> Stars"
+        )
     )
 
 def purchase_text(user_id: int) -> str:
@@ -624,8 +632,10 @@ def purchase_text(user_id: int) -> str:
     for pkg in PAYMENT_PACKAGES.values():
         package_lines.append(f"<b>{pkg['ink_amount']} ✒️</b> — {pkg['stars_price']} Stars\n≈ {pkg['generations']} генераций")
     return (
-        f"✒️ <b>Пополнить чернила</b>\n\n"
+        f"🛒 <b>Shop</b>\n\n"
         "Бесплатно: 10 генераций в день.\n"
+        "💎 Raccoon+: 100 обычных генераций в день + 100 HQ на 30 дней.\n"
+        "HQ тратится на >28 шагов, большие размеры или несколько картинок.\n"
         "Платные Чернила расходуются после бесплатного лимита.\n"
         f"Стоимость стандартной генерации: {INK_PER_GENERATION} ✒️.\n\n"
         + "\n\n".join(package_lines)
@@ -641,28 +651,57 @@ def admin_payments_text() -> str:
         lines.append(f"• <code>{html.escape(str(p.get('user_id')))}</code> {html.escape(str(p.get('package_id') or p.get('provider')))}: <code>{int(p.get('ink_amount', p.get('generations',0)) or 0)}</code> ✒️ / <code>{int(p.get('amount',0) or 0)}</code> {html.escape(str(p.get('currency','')))}")
     return "\n".join(lines)
 
+
+async def notify_moderators_about_purchase(bot_obj: Bot, user: types.User, pkg: dict, payment, balance: int) -> None:
+    charge_id = html.escape(str(getattr(payment, "telegram_payment_charge_id", "") or ""))
+    username = f"@{user.username}" if user.username else "—"
+    date = datetime.now(timezone.utc).isoformat()
+    if pkg.get("id") == RACCOON_PLUS_PACKAGE["id"]:
+        until = get_settings(user.id).pro_access_until
+        text = (
+            "💎 <b>Raccoon+</b>\n\n"
+            f"User: <code>{html.escape(user.full_name)}</code>\n"
+            f"Username: <code>{html.escape(username)}</code>\n"
+            f"ID: <code>{user.id}</code>\n"
+            "699 Stars\n30 days\n100 daily\n100 HQ\n"
+            f"Expiration date: <code>{html.escape(str(until))}</code>\n"
+            f"Payment id: <code>{charge_id}</code>"
+        )
+    else:
+        text = (
+            "✒ <b>Ink purchased</b>\n\n"
+            f"User: <code>{html.escape(user.full_name)}</code>\n"
+            f"Username: <code>{html.escape(username)}</code>\n"
+            f"ID: <code>{user.id}</code>\n"
+            f"Amount: <code>{int(pkg.get('ink_amount', 0) or 0)}</code> ✒\n"
+            f"Stars: <code>{int(pkg.get('stars_price', 0) or 0)}</code>\n"
+            f"Date: <code>{html.escape(date)}</code>\n"
+            f"Payment id: <code>{charge_id}</code>"
+        )
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot_obj.send_message(admin_id, text, parse_mode="HTML")
+        except Exception:
+            log.exception("Failed to notify moderator %s about purchase by %s", admin_id, user.id)
+
 def settings_text(user_id: int) -> str:
     s = get_settings(user_id)
+    plan = "💎 Raccoon+" if is_advanced_user(user_id) else "🌿 Ordinary"
     return (
         "⚙️ <b>Текущие настройки</b>\n\n"
+        f"План: <code>{plan}</code>\n"
         f"Движок: <code>NovelAI</code>\n"
         f"Модель: <code>{s.model_name}</code>\n"
         f"Размер: <code>{s.width}x{s.height}</code>\n"
-        "Режим генерации:\n"
-        f"• Обычный: <code>{not s.advanced_generation_mode and not s.artraccoon_mode}</code>\n"
-        f"• Расширенный: <code>{s.advanced_generation_mode}</code>\n"
-        f"• ArtRaccoon: <code>{s.artraccoon_mode}</code>\n"
         f"Картинок: <code>{s.n_samples}</code>\n"
         f"Steps: <code>{s.steps}</code>\n"
         f"Guidance: <code>{s.scale}</code>\n"
         f"Sampler: <code>{s.sampler}</code>\n"
         f"Seed: <code>{s.seed}</code>\n"
-        f"UC preset: <code>{s.uc_preset}</code>\n"
         f"Negative: <code>{s.negative_prompt or '—'}</code>\n"
-        f"Furry: <code>{s.furry_mode}</code>\n"
-        f"Background: <code>{s.background_mode}</code>\n"
-        f"Quality tags: <code>{s.add_quality_tags}</code>\n"
-        + (f"Variety+: <code>{s.variety_plus}</code>\n" if has_moderation_access(user_id) or s.advanced_generation_mode or s.artraccoon_mode else "")
+        + (f"UC preset: <code>{s.uc_preset}</code>\n" if is_advanced_user(user_id) else "")
+        + (f"Quality tags: <code>{s.add_quality_tags}</code>\n" if is_advanced_user(user_id) else "")
+        + (f"Variety+: <code>{s.variety_plus}</code>\n" if is_advanced_user(user_id) else "")
         + f"CFG rescale: <code>{s.cfg_rescale}</code>\n"
         f"Noise schedule: <code>{s.noise_schedule}</code>\n"
         f"Img2Img: <code>{s.img2img_strength} / {s.img2img_noise}</code>\n"
@@ -672,7 +711,6 @@ def settings_text(user_id: int) -> str:
 
 
 def settings_markup_for(user_id: int):
-    s = get_settings(user_id)
     return settings_menu(is_advanced_user(user_id), show_pro_button=has_moderation_access(user_id))
 
 def prompt_menu_for(s, user_id: int):
@@ -2249,7 +2287,7 @@ async def admin_broadcast_text(message: types.Message, state: FSMContext):
 async def cb_main(call: types.CallbackQuery):
     await call.message.edit_text(
         main_menu_text(),
-        reply_markup=main_menu(),
+        reply_markup=main_menu_for(call.from_user.id),
         parse_mode="HTML",
     )
     await call.answer()
@@ -2375,6 +2413,11 @@ async def cb_retry(call: types.CallbackQuery):
     await retry_last_prompt(call.message, actor=call.from_user)
 
 
+@dp.callback_query(F.data == "quick:steps")
+async def cb_quick_steps(call: types.CallbackQuery):
+    await call.message.answer("👣 Change Steps:", reply_markup=quick_steps_menu(is_advanced_user(call.from_user.id)))
+    await call.answer()
+
 
 @dp.callback_query(F.data == "prompt:show_original")
 async def cb_show_original(call: types.CallbackQuery):
@@ -2456,7 +2499,7 @@ async def cb_paid(call: types.CallbackQuery):
     elif action == "balance":
         await call.message.answer(user_balance_text(call.from_user.id), parse_mode="HTML", reply_markup=purchase_menu())
     elif action == "pkg" and len(parts) >= 3:
-        pkg = PAYMENT_PACKAGES.get(parts[2])
+        pkg = RACCOON_PLUS_PACKAGE if parts[2] == RACCOON_PLUS_PACKAGE["id"] else PAYMENT_PACKAGES.get(parts[2])
         if not pkg:
             await call.answer("Пакет не найден", show_alert=True)
             return
@@ -2478,7 +2521,7 @@ async def cb_paid(call: types.CallbackQuery):
 async def pre_checkout_handler(query: types.PreCheckoutQuery):
     try:
         payload_user_id, package_id = parse_payment_payload(query.invoice_payload)
-        pkg = PAYMENT_PACKAGES.get(package_id)
+        pkg = RACCOON_PLUS_PACKAGE if package_id == RACCOON_PLUS_PACKAGE["id"] else PAYMENT_PACKAGES.get(package_id)
         if not pkg or payload_user_id != query.from_user.id or query.currency != "XTR" or int(query.total_amount) != int(pkg["stars_price"]):
             await query.answer(ok=False, error_message="Платёж не прошёл проверку. Попробуй выбрать пакет заново.")
             return
@@ -2491,7 +2534,7 @@ async def successful_payment_handler(message: types.Message):
     payment = message.successful_payment
     try:
         payload_user_id, package_id = parse_payment_payload(payment.invoice_payload)
-        pkg = PAYMENT_PACKAGES.get(package_id)
+        pkg = RACCOON_PLUS_PACKAGE if package_id == RACCOON_PLUS_PACKAGE["id"] else PAYMENT_PACKAGES.get(package_id)
         if not pkg or payload_user_id != message.from_user.id or payment.currency != "XTR" or int(payment.total_amount) != int(pkg["stars_price"]):
             await message.answer("❌ Платёж получен, но не прошёл проверку. Напиши в поддержку: /support")
             return
@@ -2507,7 +2550,11 @@ async def successful_payment_handler(message: types.Message):
         if not credited:
             await message.answer("✅ Этот платёж уже был зачислен.\n" + user_balance_text(message.from_user.id), parse_mode="HTML", reply_markup=purchase_menu())
             return
-        await message.answer(f"✅ Оплата прошла успешно!\n\nНачислено:\n{pkg['ink_amount']} ✒️ Чернил\n\nБаланс:\n{balance} ✒️ Чернил", reply_markup=main_menu())
+        if pkg["id"] == RACCOON_PLUS_PACKAGE["id"]:
+            await message.answer(f"✅ 💎 Raccoon+ активирован на 30 дней!\n\n100 обычных генераций в день\n100 HQ генераций\n\nHQ баланс: {balance} / 100", reply_markup=main_menu_for(message.from_user.id))
+        else:
+            await message.answer(f"✅ Оплата прошла успешно!\n\nНачислено:\n{pkg['ink_amount']} ✒️ Чернил\n\nБаланс:\n{balance} ✒️ Чернил", reply_markup=main_menu_for(message.from_user.id))
+        await notify_moderators_about_purchase(message.bot, message.from_user, pkg, payment, balance)
     except Exception:
         log.exception("Failed to process successful payment")
         await message.answer("❌ Не удалось зачислить платёж автоматически. Напиши в поддержку: /support")
@@ -2523,11 +2570,11 @@ async def cb_prompt_cancel(call: types.CallbackQuery):
 async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):
     field = call.data.split(":", 1)[1]
     s = get_settings(call.from_user.id)
-    advanced = (s.advanced_generation_mode and has_moderation_access(call.from_user.id)) or s.artraccoon_mode
-    if not is_advanced_user(call.from_user.id):
-        patch_settings(call.from_user.id, advanced_generation_mode=False, n_samples=1)
-        await call.answer(PAID_PLACEHOLDER, show_alert=True)
-        await call.message.answer(PAID_PLACEHOLDER, reply_markup=main_menu())
+    advanced = is_advanced_user(call.from_user.id)
+    basic_fields = {"model", "size", "sampler", "steps", "scale", "seed", "negative"}
+    if field not in basic_fields and not advanced:
+        patch_settings(call.from_user.id, n_samples=1)
+        await call.answer("💎 Доступно в Raccoon+.", show_alert=True)
         return
     if field == "model":
         await call.message.edit_text("🧠 Выбери модель:", reply_markup=model_menu())
@@ -2555,13 +2602,13 @@ async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):
         return
     if field == "n":
         if not advanced:
-            await call.answer("Эта функция доступна только модерации.", show_alert=True)
+            await call.answer("💎 Несколько картинок доступны в Raccoon+.", show_alert=True)
             return
         await call.message.edit_text("🖼 Количество картинок:", reply_markup=samples_menu())
         await call.answer()
         return
-    if field == "modes":
-        await call.message.edit_text("🦝 Режимы:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags, s.variety_plus))
+    if field in {"modes", "advanced_nai"}:
+        await call.message.edit_text("⚙ Advanced NovelAI:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags, s.variety_plus))
         await call.answer()
         return
     prompt = SETTING_PROMPTS.get(field)
@@ -2961,7 +3008,7 @@ async def ar_char_neg_input(message: types.Message, state: FSMContext):
 def parse_setting_value(user_id: int, field: str, raw: str) -> tuple[dict | None, str]:
     text = raw.strip()
     s = get_settings(user_id)
-    advanced = (s.advanced_generation_mode and has_moderation_access(user_id)) or s.artraccoon_mode
+    advanced = is_advanced_user(user_id)
     try:
         if field == "size":
             m = re.fullmatch(r"\s*(\d{3,4})\s*[xх*]\s*(\d{3,4})\s*", text, re.I)
@@ -3084,14 +3131,14 @@ async def set_size(call: types.CallbackQuery):
         save_settings(call.from_user.id, s)
     elif name in RESOLUTIONS:
         w, h = RESOLUTIONS[name]
-        if not (s.advanced_generation_mode and has_moderation_access(call.from_user.id)) and not s.artraccoon_mode and (w, h) not in SAFE_RESOLUTIONS:
+        if not is_advanced_user(call.from_user.id) and (w, h) not in SAFE_RESOLUTIONS:
             w, h = 832, 1216
             patch_settings(call.from_user.id, width=w, height=h)
             await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
             await call.answer("В обычном режиме доступны только безопасные размеры. Поставила 832x1216 🙂", show_alert=True)
             return
         patch_settings(call.from_user.id, width=w, height=h)
-    if not (s.advanced_generation_mode and has_moderation_access(call.from_user.id)) and not s.artraccoon_mode and (get_settings(call.from_user.id).width, get_settings(call.from_user.id).height) not in SAFE_RESOLUTIONS:
+    if not is_advanced_user(call.from_user.id) and (get_settings(call.from_user.id).width, get_settings(call.from_user.id).height) not in SAFE_RESOLUTIONS:
         patch_settings(call.from_user.id, width=832, height=1216)
         await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
         await call.answer("В обычном режиме доступны только безопасные размеры. Поставила 832x1216 🙂", show_alert=True)
@@ -3101,9 +3148,6 @@ async def set_size(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:sampler:"))
 async def set_sampler(call: types.CallbackQuery):
-    if not has_moderation_access(call.from_user.id):
-        await call.answer("Эта функция доступна только модерации.", show_alert=True)
-        return
     sampler = call.data.split(":", 2)[2]
     if sampler not in SAMPLERS:
         await call.answer("Неизвестный sampler", show_alert=True)
@@ -3127,12 +3171,12 @@ async def set_uc(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:n:"))
 async def set_n(call: types.CallbackQuery):
-    if not has_moderation_access(call.from_user.id):
+    if not is_advanced_user(call.from_user.id):
         patch_settings(call.from_user.id, n_samples=1)
-        await call.answer("Эта функция доступна только модерации.", show_alert=True)
+        await call.answer("💎 Несколько картинок доступны в Raccoon+.", show_alert=True)
         return
     val = int(call.data.split(":", 2)[2])
-    if val > 1 and not (is_advanced_generation_enabled(call.from_user.id) or get_settings(call.from_user.id).artraccoon_mode):
+    if val > 1 and not is_advanced_user(call.from_user.id):
         patch_settings(call.from_user.id, n_samples=1)
         await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
         await call.answer(ANLAS_WARNING, show_alert=True)
@@ -3145,7 +3189,7 @@ async def set_n(call: types.CallbackQuery):
 async def set_steps(call: types.CallbackQuery):
     val = int(call.data.split(":", 2)[2])
     s = get_settings(call.from_user.id)
-    if val > 28 and not (s.advanced_generation_mode and has_moderation_access(call.from_user.id)) and not s.artraccoon_mode:
+    if val > 28 and not is_advanced_user(call.from_user.id):
         val = 28
         patch_settings(call.from_user.id, steps=val)
         await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")

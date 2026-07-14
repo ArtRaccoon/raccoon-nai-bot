@@ -97,9 +97,9 @@ class UserSettings:
     fal_model: str = ""
     width: int = 832
     height: int = 1216
-    steps: int = 23
-    scale: float = 4.0
-    sampler: str = "k_euler_ancestral"
+    steps: int = 28
+    scale: float = 8.0
+    sampler: str = "k_dpmpp_2s_ancestral"
     n_samples: int = 1
     advanced_generation_mode: bool = False
     # Deprecated compatibility field: old saved pro_mode=True is interpreted as advanced_generation_mode=True.
@@ -133,6 +133,9 @@ class UserSettings:
     last_generation_started_at: str = ""
     paid_generations_balance: int = 0
     paid_generations_used: int = 0
+    pro_access_until: str = ""
+    hq_balance: int = 0
+    hq_used: int = 0
     total_paid_stars: int = 0
     free_daily_used: int = 0
     free_daily_date: str = ""
