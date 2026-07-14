@@ -19,11 +19,10 @@ from dotenv import load_dotenv
 
 from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRESETS, NOISE_SCHEDULES, AELITA_DESCRIPTION, UserSettings, MAX_EXTRA_CHARACTERS
 from keyboards import (
-    main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu, provider_menu,
+    main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
     after_generation_menu, generation_item_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu, moderation_dictionary_menu, dictionary_menu, dictionary_pending_menu, admin_panel_menu,
     admin_ar_vibe_menu, admin_nai_debug_menu, admin_site_clone_menu, registry_fields_text, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu, characters_menu, purchase_menu, limit_exhausted_menu,
 )
-from app.services.fal_client import FalImageClient, FalImageError
 from app.services.nai_client import (
     NovelAIClient, NovelAIError, sanitize_payload,
     SITE_MODE_STEPS, SITE_MODE_SCALE, SITE_MODE_CFG_RESCALE, SITE_MODE_SAMPLER, SITE_MODE_NOISE_SCHEDULE,
@@ -70,10 +69,6 @@ SUPPORT_GROUP_ID = int(SUPPORT_GROUP_ID_RAW) if SUPPORT_GROUP_ID_RAW.lstrip("-")
 SUPPORT_URL = os.getenv("SUPPORT_URL", "").strip()
 MODERATION_CHANNEL_ID_RAW = os.getenv("MODERATION_CHANNEL_ID", "").strip()
 MODERATION_CHANNEL_ID = int(MODERATION_CHANNEL_ID_RAW) if MODERATION_CHANNEL_ID_RAW.lstrip("-").isdigit() else None
-FAL_ENABLED = os.getenv("FAL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-FAL_KEY = os.getenv("FAL_KEY", "").strip()
-FAL_DEFAULT_MODEL = os.getenv("FAL_DEFAULT_MODEL", "fal-ai/flux/dev").strip() or "fal-ai/flux/dev"
-FAL_TIMEOUT_SECONDS = int(os.getenv("FAL_TIMEOUT_SECONDS", "180") or 180)
 
 ADMIN_IDS = [
     int(x.strip())
@@ -120,12 +115,6 @@ dp.message.middleware(UserIdentityMiddleware())
 dp.message.middleware(GroupMessageGuardMiddleware())
 dp.callback_query.middleware(UserIdentityMiddleware())
 nai = NovelAIClient(NOVELAI_TOKEN, default_model=NAI_MODEL, proxy_url=PROXY_URL)
-fal_image = FalImageClient(FAL_KEY, FAL_DEFAULT_MODEL, timeout=FAL_TIMEOUT_SECONDS)
-
-def fal_available() -> bool:
-    return bool(FAL_ENABLED and FAL_KEY)
-
-
 def ar_payload_mode(s) -> str:
     return _ar_payload_mode(s, NAI_MODEL)
 
@@ -155,9 +144,18 @@ def apply_anlas_safe_defaults(user_id: int):
     return _apply_anlas_safe_defaults(user_id, ADMIN_IDS)
 
 
+def has_moderation_access(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+def is_advanced_generation_enabled(user_id: int) -> bool:
+    s = get_settings(user_id)
+    return has_moderation_access(user_id) and bool(s.advanced_generation_mode or s.pro_mode)
+
+
 def is_advanced_user(user_id: int) -> bool:
     s = get_settings(user_id)
-    return user_id in ADMIN_IDS and (s.pro_mode or s.artraccoon_mode)
+    return is_advanced_generation_enabled(user_id) or s.artraccoon_mode
 
 
 def artraccoon_vibe_prompt() -> str:
@@ -483,8 +481,8 @@ def moderation_metadata_text(
         "🚫 <b>Negative prompt</b>\n"
         f"{_blockquote(s.negative_prompt or '—', 1800)}\n"
         "⚙️ <b>Settings</b>\n"
-        f"Provider: <code>{html.escape('fal.ai' if getattr(s, 'generation_provider', 'novelai') == 'fal' else 'NovelAI')}</code>\n"
-        f"Model: <code>{html.escape(getattr(s, 'fal_model', 'fal-ai/flux/dev') if getattr(s, 'generation_provider', 'novelai') == 'fal' else s.model_name)}</code>\n"
+        "Provider: <code>NovelAI</code>\n"
+        f"Model: <code>{html.escape(s.model_name)}</code>\n"
         f"Size: <code>{s.width}x{s.height}</code>\n"
         f"Sampler: <code>{html.escape(s.sampler)}</code>\n"
         f"Steps: <code>{s.steps}</code>\n"
@@ -524,7 +522,7 @@ async def _send_moderation_images_to_admins(bot_obj: Bot, user: types.User, imag
 
 
 async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: str, final_prompt: str, s, candidates: list[str] | None = None, hidden_vibe_applied: bool = False) -> None:
-    if user.id in ADMIN_IDS:
+    if has_moderation_access(user.id):
         return
     text = moderation_summary(user, original_prompt, final_prompt, s, candidates)
     if hidden_vibe_applied:
@@ -546,7 +544,7 @@ async def send_moderation_copy(bot_obj: Bot, user: types.User, original_prompt: 
 
 
 async def send_moderation_images(bot_obj: Bot, user: types.User, images: list[bytes], original_prompt: str, final_prompt: str, s, candidates: list[str] | None = None, hidden_vibe_applied: bool = False) -> None:
-    if user.id in ADMIN_IDS or not images:
+    if has_moderation_access(user.id) or not images:
         return
     timestamp = datetime.now(timezone.utc).isoformat()
     text = moderation_metadata_text(
@@ -602,7 +600,7 @@ def howto_text(user_id: int | None = None) -> str:
 
 def user_balance_text(user_id: int) -> str:
     st = get_settings(user_id)
-    free_left = "∞" if user_id in ADMIN_IDS else str(free_remaining_today(user_id))
+    free_left = "∞" if has_moderation_access(user_id) else str(free_remaining_today(user_id))
     return (
         "📦 <b>Мой баланс</b>\n\n"
         f"🖌 Бесплатно сегодня: <code>{free_left}</code> / <code>{DAILY_GENERATION_LIMIT}</code>\n"
@@ -637,11 +635,13 @@ def settings_text(user_id: int) -> str:
     s = get_settings(user_id)
     return (
         "⚙️ <b>Текущие настройки</b>\n\n"
-        f"Движок: <code>{s.generation_provider}</code>\n"
+        f"Движок: <code>NovelAI</code>\n"
         f"Модель: <code>{s.model_name}</code>\n"
-        f"fal.ai model: <code>{s.fal_model}</code>\n"
         f"Размер: <code>{s.width}x{s.height}</code>\n"
-        f"Режим: <code>{'ArtRaccoon' if s.artraccoon_mode else ('PRO' if s.pro_mode else 'Обычный')}</code>\n"
+        "Режим генерации:\n"
+        f"• Обычный: <code>{not s.advanced_generation_mode and not s.artraccoon_mode}</code>\n"
+        f"• Расширенный: <code>{s.advanced_generation_mode}</code>\n"
+        f"• ArtRaccoon: <code>{s.artraccoon_mode}</code>\n"
         f"Картинок: <code>{s.n_samples}</code>\n"
         f"Steps: <code>{s.steps}</code>\n"
         f"Guidance: <code>{s.scale}</code>\n"
@@ -652,7 +652,7 @@ def settings_text(user_id: int) -> str:
         f"Furry: <code>{s.furry_mode}</code>\n"
         f"Background: <code>{s.background_mode}</code>\n"
         f"Quality tags: <code>{s.add_quality_tags}</code>\n"
-        + (f"Variety+: <code>{s.variety_plus}</code>\n" if user_id in ADMIN_IDS or s.pro_mode or s.artraccoon_mode else "")
+        + (f"Variety+: <code>{s.variety_plus}</code>\n" if has_moderation_access(user_id) or s.advanced_generation_mode or s.artraccoon_mode else "")
         + f"CFG rescale: <code>{s.cfg_rescale}</code>\n"
         f"Noise schedule: <code>{s.noise_schedule}</code>\n"
         f"Img2Img: <code>{s.img2img_strength} / {s.img2img_noise}</code>\n"
@@ -661,28 +661,9 @@ def settings_text(user_id: int) -> str:
 
 
 
-def provider_text(user_id: int) -> str:
-    s = get_settings(user_id)
-    current = "fal.ai" if s.generation_provider == "fal" else "NovelAI"
-    status = "настроен" if fal_available() else "не настроен"
-    return (
-        "🎨 <b>Движок генерации</b>\n\n"
-        f"Текущий: <code>{html.escape(current)}</code>\n"
-        f"fal.ai: <code>{status}</code>\n"
-        f"fal.ai model: <code>{html.escape(s.fal_model or FAL_DEFAULT_MODEL)}</code>"
-    )
-
-async def show_provider_menu(message: types.Message, user_id: int, *, edit: bool = False) -> None:
-    text = provider_text(user_id)
-    markup = provider_menu(get_settings(user_id).generation_provider, fal_available())
-    if edit:
-        await message.edit_text(text, parse_mode="HTML", reply_markup=markup)
-    else:
-        await message.answer(text, parse_mode="HTML", reply_markup=markup)
-
 def settings_markup_for(user_id: int):
     s = get_settings(user_id)
-    return settings_menu(is_advanced_user(user_id), show_pro_button=user_id in ADMIN_IDS)
+    return settings_menu(is_advanced_user(user_id), show_pro_button=has_moderation_access(user_id))
 
 def prompt_menu_for(s, user_id: int):
     return pending_prompt_menu(bool(s.pending_image_path), is_advanced_user(user_id), compact=s.artraccoon_mode, vibe_enabled=s.artraccoon_vibe_enabled, vibe_available=bool(artraccoon_vibe_prompt()))
@@ -733,7 +714,7 @@ async def retry_last_prompt(message: types.Message, actor: types.User | None = N
 async def start(message: types.Message):
     get_settings(message.from_user.id)
     await message.answer(
-        start_text(free_remaining_today(message.from_user.id), DAILY_GENERATION_LIMIT, message.from_user.id in ADMIN_IDS),
+        start_text(free_remaining_today(message.from_user.id), DAILY_GENERATION_LIMIT, has_moderation_access(message.from_user.id)),
         reply_markup=main_menu(),
         parse_mode="HTML",
     )
@@ -742,8 +723,12 @@ async def start(message: types.Message):
 async def help_cmd(message: types.Message):
     await message.answer(howto_text(message.from_user.id), reply_markup=main_menu(), parse_mode="HTML")
 
+def moderation_panel_text() -> str:
+    return "🛡 <b>Модерация RaccoonNAI</b>"
+
+
 def admin_panel_text() -> str:
-    return "🛠 <b>Админ-панель RaccoonNAI</b>"
+    return moderation_panel_text()
 
 
 def _parse_dt(raw) -> datetime | None:
@@ -781,7 +766,7 @@ def build_admin_stats() -> dict:
         total_paid_balance += int(user.get("paid_generations_balance", 0) or 0)
         if user.get("artraccoon_vibe_enabled"):
             vibe_users += 1
-        if user.get("pro_mode") or user.get("artraccoon_mode") or uid.isdigit() and int(uid) in ADMIN_IDS:
+        if user.get("advanced_generation_mode") or user.get("pro_mode"):
             advanced_users += 1
         if str(user.get("pending_prompt") or "").strip():
             pending_drafts += 1
@@ -810,7 +795,7 @@ def build_admin_stats() -> dict:
     return {
         "total_users": total_users, "users_with_username": sum(1 for raw in users.values() if isinstance(raw, dict) and str(raw.get("username") or "").strip()), "users_without_username": sum(1 for raw in users.values() if not (isinstance(raw, dict) and str(raw.get("username") or "").strip())), "total_generations": total_generations, "generations_today": generations_today,
         "active_today": len(active_today), "active_7d": len(active_7d), "free_used": free_used,
-        "paid_used": None, "paid_balance": total_paid_balance, "vibe_users": vibe_users, "advanced_users": advanced_users,
+        "paid_used": None, "paid_balance": total_paid_balance, "vibe_users": vibe_users, "advanced_users": advanced_users, "moderators": len(ADMIN_IDS),
         "pending_drafts": pending_drafts, "favorites": total_favorites, "history": total_history,
         "avg": total_generations / total_users if total_users else 0,
         "top_users": sorted(by_user, key=lambda x: x[1], reverse=True)[:10],
@@ -836,7 +821,8 @@ def format_admin_stats(stats: dict) -> str:
         f"🎁 Free generations used: <code>{stats['free_used']}</code>\n"
         f"✒️ Total remaining Ink balance: <code>{stats['paid_balance']}</code>\n"
         f"🦝 Users with ArtRaccoon Vibe enabled: <code>{stats['vibe_users']}</code>\n"
-        f"⚙️ Users with advanced/admin mode enabled: <code>{stats['advanced_users']}</code>\n"
+        f"🛡 Модераторов: <code>{stats['moderators']}</code>\n"
+        f"⚙️ Расширенный режим включён: <code>{stats['advanced_users']}</code>\n"
         f"🧪 Users with saved pending drafts: <code>{stats['pending_drafts']}</code>\n"
         f"⭐ Total favorites: <code>{stats['favorites']}</code>\n"
         f"🕘 Total history items: <code>{stats['history']}</code>\n"
@@ -849,7 +835,7 @@ def format_admin_stats(stats: dict) -> str:
 
 
 async def show_admin_panel(message: types.Message) -> None:
-    if not message.from_user or message.from_user.id not in ADMIN_IDS:
+    if not message.from_user or not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     await message.answer(admin_panel_text(), parse_mode="HTML", reply_markup=admin_panel_menu())
@@ -931,7 +917,7 @@ async def support_message_input(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("support_reply:"))
 async def cb_support_reply(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     target_user_id = int(call.data.split(":", 1)[1])
@@ -943,7 +929,7 @@ async def cb_support_reply(call: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "support_close")
 async def cb_support_close(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     await call.answer("Закрыто")
@@ -955,7 +941,7 @@ async def cb_support_close(call: types.CallbackQuery):
 
 @dp.message(GenState.waiting_admin_reply)
 async def admin_support_reply_input(message: types.Message, state: FSMContext):
-    if message.from_user is None or message.from_user.id not in ADMIN_IDS:
+    if message.from_user is None or not has_moderation_access(message.from_user.id):
         await state.clear()
         await message.answer("Команда не найдена.")
         return
@@ -978,7 +964,7 @@ async def admin_support_reply_input(message: types.Message, state: FSMContext):
 
 @dp.message(Command("payments"))
 async def payments_cmd(message: types.Message):
-    if not message.from_user or message.from_user.id not in ADMIN_IDS:
+    if not message.from_user or not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     await message.answer(admin_payments_text(), parse_mode="HTML", reply_markup=admin_purchases_menu())
@@ -1003,7 +989,7 @@ def _manual_payment_record(admin_id: int, user_id: int, amount: int, new_balance
 
 @dp.message(Command("grant"))
 async def grant_cmd(message: types.Message):
-    if not message.from_user or message.from_user.id not in ADMIN_IDS:
+    if not message.from_user or not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     parts = (message.text or "").split()
@@ -1021,7 +1007,7 @@ async def grant_cmd(message: types.Message):
 
 @dp.message(Command("take"))
 async def take_cmd(message: types.Message):
-    if not message.from_user or message.from_user.id not in ADMIN_IDS:
+    if not message.from_user or not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     parts = (message.text or "").split()
@@ -1037,14 +1023,14 @@ async def take_cmd(message: types.Message):
     _manual_payment_record(message.from_user.id, user_id, -amount, balance)
     await message.answer(f"✅ Списано:\n-{amount} ✒️\n\nБаланс пользователя <code>{user_id}</code>: <code>{balance}</code> ✒️", parse_mode="HTML", reply_markup=admin_purchases_menu())
 
-@dp.message(Command("admin", "xxx"))
+@dp.message(Command("moderation", "admin", "xxx"))
 async def admin_cmd(message: types.Message):
     await show_admin_panel(message)
 
 
 @dp.message(Command("admin_stats"))
 async def admin_stats_cmd(message: types.Message):
-    if not message.from_user or message.from_user.id not in ADMIN_IDS:
+    if not message.from_user or not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     await message.answer(format_admin_stats(build_admin_stats()), parse_mode="HTML", reply_markup=admin_panel_menu())
@@ -1077,7 +1063,7 @@ async def reset_settings_cmd(message: types.Message):
 @dp.message(Command("ar_reset"))
 async def ar_reset_cmd(message: types.Message):
     s = get_settings(message.from_user.id)
-    if message.from_user.id not in ADMIN_IDS or not s.artraccoon_mode:
+    if not has_moderation_access(message.from_user.id) or not s.artraccoon_mode:
         await message.answer("Команда не найдена.")
         return
     await message.answer(
@@ -1097,7 +1083,7 @@ async def settings_cmd(message: types.Message):
 
 @dp.message(Command("basic_defaults"))
 async def basic_defaults_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     await message.answer(basic_defaults_text(), parse_mode="HTML", reply_markup=basic_defaults_menu())
@@ -1105,7 +1091,7 @@ async def basic_defaults_cmd(message: types.Message):
 
 @dp.message(Command("basic_defaults_show"))
 async def basic_defaults_show_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     raw = get_config_value("basic_generation_defaults", None)
@@ -1115,28 +1101,28 @@ async def basic_defaults_show_cmd(message: types.Message):
 
 @dp.message(Command("basic_defaults_reset"))
 async def basic_defaults_reset_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     delete_config_value("basic_generation_defaults")
     await message.answer("♻ Basic defaults reset. Factory defaults now apply.", reply_markup=basic_defaults_menu())
 
 
-@dp.message(Command("pro"))
+@dp.message(Command("advanced", "pro"))
 async def pro_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        patch_settings(message.from_user.id, pro_mode=False)
-        await message.answer("💎 Эта функция временно отключена.")
+    if not has_moderation_access(message.from_user.id):
+        patch_settings(message.from_user.id, advanced_generation_mode=False)
+        await message.answer("Эта функция доступна только модерации.")
         return
     s = get_settings(message.from_user.id)
-    patch_settings(message.from_user.id, pro_mode=not s.pro_mode)
+    patch_settings(message.from_user.id, advanced_generation_mode=not s.advanced_generation_mode)
     s = get_settings(message.from_user.id)
-    await message.answer("💎 PRO режим включён. Расширенные функции могут тратить Anlas." if s.pro_mode else "✅ Обычный режим включён. Дорогие функции скрыты.", reply_markup=settings_markup_for(message.from_user.id))
+    await message.answer("⚙️ Расширенный режим включён" if s.advanced_generation_mode else "🌿 Обычный режим включён", reply_markup=settings_markup_for(message.from_user.id))
 
 
 @dp.message(Command("set_artraccoon_vibe"))
 async def set_artraccoon_vibe_cmd(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     await state.set_state(GenState.waiting_ar_vibe)
@@ -1145,7 +1131,7 @@ async def set_artraccoon_vibe_cmd(message: types.Message, state: FSMContext):
 
 @dp.message(Command("show_artraccoon_vibe"))
 async def show_artraccoon_vibe_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     await message.answer(f"🦝 <b>ArtRaccoon vibe</b>\n<blockquote expandable>{html.escape(artraccoon_vibe_prompt() or '—')}</blockquote>", parse_mode="HTML")
@@ -1153,7 +1139,7 @@ async def show_artraccoon_vibe_cmd(message: types.Message):
 
 @dp.message(Command("clear_artraccoon_vibe"))
 async def clear_artraccoon_vibe_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     set_config_value("artraccoon_vibe_prompt", "")
@@ -1162,7 +1148,7 @@ async def clear_artraccoon_vibe_cmd(message: types.Message):
 
 @dp.message(GenState.waiting_ar_vibe)
 async def save_artraccoon_vibe(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await state.clear()
         await message.answer("Команда не найдена.")
         return
@@ -1172,7 +1158,7 @@ async def save_artraccoon_vibe(message: types.Message, state: FSMContext):
 
 @dp.message(Command("ArtRaccoonoff"))
 async def artraccoon_off_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     patch_settings(message.from_user.id, artraccoon_mode=False)
@@ -1180,16 +1166,16 @@ async def artraccoon_off_cmd(message: types.Message):
 
 @dp.message(Command("ArtRaccoonon"))
 async def artraccoon_on_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
-    patch_settings(message.from_user.id, artraccoon_mode=True, pro_mode=True)
+    patch_settings(message.from_user.id, artraccoon_mode=True, advanced_generation_mode=True)
     await message.answer("🦝 ArtRaccoon режим включён. Текст теперь считается Character Prompt.", reply_markup=artraccoon_menu())
 
 @dp.message(Command("ar"))
 async def ar_cmd(message: types.Message):
     s = get_settings(message.from_user.id)
-    if message.from_user.id not in ADMIN_IDS or not s.artraccoon_mode:
+    if not has_moderation_access(message.from_user.id) or not s.artraccoon_mode:
         await message.answer("Команда не найдена.")
         return
     await message.answer("🦝 <b>ArtRaccoon панель</b>", parse_mode="HTML", reply_markup=artraccoon_menu())
@@ -1197,7 +1183,7 @@ async def ar_cmd(message: types.Message):
 @dp.message(Command("ar_settings"))
 async def ar_settings_cmd(message: types.Message):
     s = get_settings(message.from_user.id)
-    if message.from_user.id not in ADMIN_IDS or not s.artraccoon_mode:
+    if not has_moderation_access(message.from_user.id) or not s.artraccoon_mode:
         await message.answer("Команда не найдена.")
         return
     def brief(label, value):
@@ -1207,7 +1193,7 @@ async def ar_settings_cmd(message: types.Message):
 @dp.message(Command("ar_show"))
 async def ar_show_cmd(message: types.Message):
     s = get_settings(message.from_user.id)
-    if message.from_user.id not in ADMIN_IDS or not s.artraccoon_mode:
+    if not has_moderation_access(message.from_user.id) or not s.artraccoon_mode:
         await message.answer("Команда не найдена.")
         return
     for label, value in [("Base Prompt", s.artraccoon_base_prompt), ("Base UC", s.artraccoon_base_uc), ("Character Prompt", s.artraccoon_character_prompt), ("Character UC", s.artraccoon_character_uc or s.artraccoon_character_negative), ("Character Position", s.artraccoon_character_position)]:
@@ -1216,7 +1202,7 @@ async def ar_show_cmd(message: types.Message):
 @dp.message(Command("ar_payload"))
 async def ar_payload_cmd(message: types.Message):
     s = get_settings(message.from_user.id)
-    if message.from_user.id not in ADMIN_IDS or not s.artraccoon_mode:
+    if not has_moderation_access(message.from_user.id) or not s.artraccoon_mode:
         await message.answer("Команда не найдена.")
         return
     s = patch_settings(message.from_user.id, artraccoon_force_concat=not s.artraccoon_force_concat)
@@ -1230,7 +1216,7 @@ async def ar_payload_cmd(message: types.Message):
 @dp.message(Command("ar_show_payload"))
 async def ar_show_payload_cmd(message: types.Message):
     s = get_settings(message.from_user.id)
-    if message.from_user.id not in ADMIN_IDS or not s.artraccoon_mode:
+    if not has_moderation_access(message.from_user.id) or not s.artraccoon_mode:
         await message.answer("Команда не найдена.")
         return
     preview = nai.safe_prompt_preview(s.artraccoon_base_prompt, s)
@@ -1253,7 +1239,7 @@ async def ar_show_payload_cmd(message: types.Message):
 
 @dp.message(Command("raw"))
 async def raw_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     s = get_settings(message.from_user.id)
@@ -1262,7 +1248,7 @@ async def raw_cmd(message: types.Message):
 
 @dp.message(Command("nai_debug"))
 async def nai_debug_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     s = get_settings(message.from_user.id)
@@ -1276,7 +1262,7 @@ async def nai_debug_cmd(message: types.Message):
 
 @dp.message(Command("nai_payload"))
 async def nai_payload_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     s = get_settings(message.from_user.id)
@@ -1287,7 +1273,7 @@ async def nai_payload_cmd(message: types.Message):
 
 @dp.message(Command("nai_compare"))
 async def nai_compare_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     meta = get_last_metadata(message.from_user.id)
@@ -1303,7 +1289,7 @@ async def nai_compare_cmd(message: types.Message):
 
 @dp.message(Command("nai_payload_full"))
 async def nai_payload_full_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     payload = sanitize_payload(get_last_payload(message.from_user.id))
@@ -1316,7 +1302,7 @@ async def nai_payload_full_cmd(message: types.Message):
 
 @dp.message(Command("nai_site_mode"))
 async def nai_site_mode_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     s = get_settings(message.from_user.id)
@@ -1351,7 +1337,7 @@ async def notify_admins_about_prompt(message: types.Message, prompt: str) -> Non
         return
 
     # Пользователь просил получать вводы других пользователей.
-    if user.id in ADMIN_IDS:
+    if has_moderation_access(user.id):
         return
 
     s = get_settings(user.id)
@@ -1401,7 +1387,7 @@ async def generate_image_from_prompt(
 
     user_id = user.id
     st = get_settings(user_id)
-    if user_id not in ADMIN_IDS and free_remaining_today(user_id) == 0 and int(st.paid_generations_balance or 0) < INK_PER_GENERATION:
+    if not has_moderation_access(user_id) and free_remaining_today(user_id) == 0 and int(st.paid_generations_balance or 0) < INK_PER_GENERATION:
         await message.answer(DAILY_LIMIT_TEXT, reply_markup=limit_exhausted_menu())
         return
 
@@ -1415,19 +1401,10 @@ async def generate_image_from_prompt(
     original_prompt = s.pending_original_prompt or prompt
     visible_prompt = prompt
     generation_prompt, hidden_vibe_applied = visible_prompt_with_optional_vibe(user_id, visible_prompt)
-    provider = s.generation_provider if s.generation_provider in {"novelai", "fal"} else "novelai"
-    if provider == "fal":
-        if not fal_available():
-            await message.answer("fal.ai пока не настроен.", reply_markup=main_menu())
-            return
-        if not s.fal_model:
-            s = patch_settings(user_id, fal_model=FAL_DEFAULT_MODEL)
+    try:
+        final_prompt = nai.build_prompt(generation_prompt, s)
+    except Exception:
         final_prompt = generation_prompt
-    else:
-        try:
-            final_prompt = nai.build_prompt(generation_prompt, s)
-        except Exception:
-            final_prompt = generation_prompt
 
     global generation_waiting
     if generation_lock.locked() or generation_waiting:
@@ -1462,30 +1439,16 @@ async def generate_image_from_prompt(
                 return
             candidates = learn_from_english_prompt(visible_prompt) if looks_like_english_tags(visible_prompt) else []
             await send_moderation_copy(message.bot, user, original_prompt, final_prompt, s, candidates, hidden_vibe_applied)
-            if provider == "fal":
-                if image_bytes:
-                    raise FalImageError("fal.ai provider currently supports text-to-image only")
-                images = await fal_image.generate_image(
+            images = await asyncio.wait_for(
+                nai.generate(
                     generation_prompt,
-                    negative_prompt=s.negative_prompt,
-                    width=s.width,
-                    height=s.height,
-                    steps=s.steps,
-                    guidance_scale=s.scale,
-                    seed=s.seed,
-                    model=s.fal_model or FAL_DEFAULT_MODEL,
-                )
-            else:
-                images = await asyncio.wait_for(
-                    nai.generate(
-                        generation_prompt,
-                        s,
-                        image_bytes=image_bytes,
-                        on_character_payload_fallback=show_character_payload_fallback,
-                    ),
-                    timeout=GENERATION_TIMEOUT_SECONDS,
-                )
-                set_last_payload(user_id, sanitize_payload(nai.last_payload))
+                    s,
+                    image_bytes=image_bytes,
+                    on_character_payload_fallback=show_character_payload_fallback,
+                ),
+                timeout=GENERATION_TIMEOUT_SECONDS,
+            )
+            set_last_payload(user_id, sanitize_payload(nai.last_payload))
         timestamp = datetime.now(timezone.utc).isoformat()
         saved_images = save_generated_images(user_id, timestamp, images)
         history_item = {
@@ -1494,8 +1457,8 @@ async def generate_image_from_prompt(
             "final_prompt": visible_prompt,
             "negative_prompt": s.negative_prompt,
             "seed": s.seed,
-            "provider": provider,
-            "model": s.fal_model if provider == "fal" else s.model_name,
+            "provider": "novelai",
+            "model": s.model_name,
             "size": f"{s.width}x{s.height}",
             "timestamp": timestamp,
             "image": {"count": len(images), "format": "png"} if images else {},
@@ -1509,9 +1472,9 @@ async def generate_image_from_prompt(
         await send_moderation_images(message.bot, user, images, original_prompt, final_prompt, s, candidates, hidden_vibe_applied)
 
         for idx, img in enumerate(images, start=1):
-            name = f"{provider}_{idx}.png"
+            name = f"novelai_{idx}.png"
             image = BufferedInputFile(img, filename=name)
-            caption_model = s.fal_model if provider == "fal" else s.model_name
+            caption_model = s.model_name
             caption = generation_result_caption(caption_model, s.width, s.height, s.seed)
             try:
                 await message.answer_photo(
@@ -1541,11 +1504,6 @@ async def generate_image_from_prompt(
             f"❌ NovelAI не смог сгенерировать изображение. {str(e)[:3300]}",
             reply_markup=main_menu(),
         )
-    except FalImageError as e:
-        await wait.edit_text(
-            f"❌ fal.ai не смог сгенерировать изображение. {str(e)[:3300]}",
-            reply_markup=main_menu(),
-        )
     except Exception:
         log.exception("Generation failed")
         await wait.edit_text(
@@ -1559,10 +1517,6 @@ async def generate_image_from_prompt(
             generation_waiting = max(0, generation_waiting - 1)
 
 
-
-@dp.message(Command("provider"))
-async def provider_cmd(message: types.Message):
-    await show_provider_menu(message, message.from_user.id)
 
 @dp.message(Command("gen"))
 async def gen_cmd(message: types.Message):
@@ -1739,9 +1693,7 @@ def _admin_user_summary(user_id: int) -> str:
         f"📚 History count: <code>{len(history)}</code>\n"
         f"⭐ Favorites count: <code>{len(favorites)}</code>\n"
         f"🦝 ArtRaccoon vibe enabled: <code>{bool(raw.get('artraccoon_vibe_enabled'))}</code>\n"
-        f"🎨 generation_provider: <code>{html.escape(str(raw.get('generation_provider', 'novelai')))}</code>\n"
-        f"⚡ fal_model: <code>{html.escape(str(raw.get('fal_model', FAL_DEFAULT_MODEL)))}</code>\n"
-        f"🕘 Last seen: <code>{html.escape(str(raw.get('last_seen_at') or '—'))}</code>"
+                f"🕘 Last seen: <code>{html.escape(str(raw.get('last_seen_at') or '—'))}</code>"
     )
 
 
@@ -1804,7 +1756,7 @@ async def show_characters_panel(message: types.Message, user_id: int, *, edit: b
 
 @dp.message(Command("characters", "char"))
 async def characters_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         return
     await show_characters_panel(message, message.from_user.id)
@@ -1812,7 +1764,7 @@ async def characters_cmd(message: types.Message):
 
 @dp.callback_query(F.data.startswith("char:"))
 async def cb_characters(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     action = call.data.split(":", 2)[1]
@@ -1844,7 +1796,7 @@ async def cb_characters(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(GenState.waiting_char_prompt)
 async def char_prompt_input(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         await state.clear()
         return
@@ -1855,7 +1807,7 @@ async def char_prompt_input(message: types.Message, state: FSMContext):
 
 @dp.message(GenState.waiting_char_uc)
 async def char_uc_input(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         await state.clear()
         return
@@ -1867,7 +1819,7 @@ async def char_uc_input(message: types.Message, state: FSMContext):
 
 @dp.message(GenState.waiting_char_position)
 async def char_position_input(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await message.answer("Команда не найдена.")
         await state.clear()
         return
@@ -1883,7 +1835,7 @@ async def char_position_input(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("admin:"))
 async def cb_admin_panel(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     action = call.data.split(":", 1)[1]
@@ -1915,7 +1867,7 @@ async def cb_admin_panel(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("admin_ar_vibe:"))
 async def cb_admin_ar_vibe(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     action = call.data.split(":", 1)[1]
@@ -1932,7 +1884,7 @@ async def cb_admin_ar_vibe(call: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("admin_nai:"))
 async def cb_admin_nai(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     action = call.data.split(":", 1)[1]
@@ -1968,7 +1920,7 @@ async def cb_admin_nai(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("basic_defaults:"))
 async def cb_basic_defaults(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     parts = call.data.split(":")
@@ -2074,7 +2026,7 @@ async def cb_basic_defaults(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(GenState.waiting_basic_steps)
 async def basic_steps_input(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await state.clear()
         await message.answer("Команда не найдена.")
         return
@@ -2090,7 +2042,7 @@ async def basic_steps_input(message: types.Message, state: FSMContext):
 
 @dp.message(GenState.waiting_basic_cfg)
 async def basic_cfg_input(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await state.clear()
         await message.answer("Команда не найдена.")
         return
@@ -2106,7 +2058,7 @@ async def basic_cfg_input(message: types.Message, state: FSMContext):
 
 @dp.message(GenState.waiting_basic_negative)
 async def basic_negative_input(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await state.clear()
         await message.answer("Команда не найдена.")
         return
@@ -2118,7 +2070,7 @@ async def basic_negative_input(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("admin_purchases:"))
 async def cb_admin_purchases(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     action = call.data.split(":", 1)[1]
@@ -2134,7 +2086,7 @@ async def cb_admin_purchases(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(GenState.waiting_purchase_user_id)
 async def admin_purchase_user_id(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await state.clear()
         await message.answer("Команда не найдена.")
         return
@@ -2156,7 +2108,7 @@ async def admin_purchase_user_id(message: types.Message, state: FSMContext):
 
 @dp.message(GenState.waiting_purchase_amount)
 async def admin_purchase_amount(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await state.clear()
         await message.answer("Команда не найдена.")
         return
@@ -2176,7 +2128,7 @@ async def admin_purchase_amount(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("admin_users:"))
 async def cb_admin_users(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     action = call.data.split(":", 1)[1]
@@ -2207,7 +2159,7 @@ async def cb_admin_users(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(GenState.waiting_admin_user_id)
 async def admin_user_id_answer(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await state.clear()
         await message.answer("Команда не найдена.")
         return
@@ -2232,7 +2184,7 @@ async def admin_user_id_answer(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("admin_broadcast:"))
 async def cb_admin_broadcast(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     action = call.data.split(":", 1)[1]
@@ -2273,7 +2225,7 @@ async def cb_admin_broadcast(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(GenState.waiting_broadcast_text)
 async def admin_broadcast_text(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(message.from_user.id):
         await state.clear()
         await message.answer("Команда не найдена.")
         return
@@ -2293,10 +2245,6 @@ async def cb_main(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "menu:settings")
 async def cb_settings(call: types.CallbackQuery):
-    if not is_advanced_user(call.from_user.id):
-        await call.message.edit_text(PAID_PLACEHOLDER, reply_markup=main_menu())
-        await call.answer()
-        return
     await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
     await call.answer()
 
@@ -2318,7 +2266,7 @@ async def cb_reset_confirm(call: types.CallbackQuery):
     kind = call.data.rsplit(":", 1)[-1]
     if kind == "ar":
         s = get_settings(call.from_user.id)
-        if call.from_user.id not in ADMIN_IDS or not s.artraccoon_mode:
+        if not has_moderation_access(call.from_user.id) or not s.artraccoon_mode:
             await call.answer("Команда не найдена.", show_alert=True)
             return
         patch_settings(call.from_user.id, **artraccoon_prompt_defaults())
@@ -2560,36 +2508,13 @@ async def cb_prompt_cancel(call: types.CallbackQuery):
     await call.answer("Отменено")
 
 
-@dp.callback_query(F.data == "settings:provider")
-async def cb_settings_provider(call: types.CallbackQuery):
-    await show_provider_menu(call.message, call.from_user.id, edit=True)
-    await call.answer()
-
-
-@dp.callback_query(F.data.startswith("provider:set:"))
-async def cb_provider_set(call: types.CallbackQuery):
-    provider = call.data.split(":", 2)[2]
-    if provider == "fal" and not fal_available():
-        await call.answer("fal.ai пока не настроен.", show_alert=True)
-        await call.message.answer("fal.ai пока не настроен.", reply_markup=main_menu())
-        return
-    if provider not in {"novelai", "fal"}:
-        await call.answer("Неизвестный движок", show_alert=True)
-        return
-    updates = {"generation_provider": provider}
-    if provider == "fal" and not get_settings(call.from_user.id).fal_model:
-        updates["fal_model"] = FAL_DEFAULT_MODEL
-    patch_settings(call.from_user.id, **updates)
-    await show_provider_menu(call.message, call.from_user.id, edit=True)
-    await call.answer("Движок обновлён")
-
 @dp.callback_query(F.data.startswith("settings:"))
 async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):
     field = call.data.split(":", 1)[1]
     s = get_settings(call.from_user.id)
-    advanced = (s.pro_mode and call.from_user.id in ADMIN_IDS) or s.artraccoon_mode
+    advanced = (s.advanced_generation_mode and has_moderation_access(call.from_user.id)) or s.artraccoon_mode
     if not is_advanced_user(call.from_user.id):
-        patch_settings(call.from_user.id, pro_mode=False, n_samples=1)
+        patch_settings(call.from_user.id, advanced_generation_mode=False, n_samples=1)
         await call.answer(PAID_PLACEHOLDER, show_alert=True)
         await call.message.answer(PAID_PLACEHOLDER, reply_markup=main_menu())
         return
@@ -2619,7 +2544,7 @@ async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):
         return
     if field == "n":
         if not advanced:
-            await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+            await call.answer("Эта функция доступна только модерации.", show_alert=True)
             return
         await call.message.edit_text("🖼 Количество картинок:", reply_markup=samples_menu())
         await call.answer()
@@ -2855,13 +2780,13 @@ async def cb_history_favorite_action(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.in_({"menu:inpaint", "menu:reference", "menu:upscale"}))
 async def cb_placeholders(call: types.CallbackQuery):
-    if not get_settings(call.from_user.id).pro_mode:
-        await call.message.edit_text("💎 Это PRO/Anlas-связанная функция. Сейчас она заблокирована в экономном режиме: может тратить Anlas. Включи 💎 PRO / Анласы, чтобы разрешить дорогие режимы.", reply_markup=main_menu())
+    if not is_advanced_user(call.from_user.id):
+        await call.message.edit_text("Эта функция доступна в расширенном режиме.", reply_markup=main_menu())
     else:
         texts = {
-            "menu:inpaint": "🩹 Инпейнт — PRO/Anlas-связанная функция. Поддержка масок будет добавлена позже.",
-            "menu:reference": "🧬 Референс / вайб — PRO/Anlas-связанная функция. Workflow будет добавлен позже.",
-            "menu:upscale": "🔍 Апскейл — PRO/Anlas-связанная функция и будет добавлена следующим безопасным шагом.",
+            "menu:inpaint": "🩹 Инпейнт — функция расширенного режима. Поддержка масок будет добавлена позже.",
+            "menu:reference": "🧬 Референс / вайб — функция расширенного режима. Workflow будет добавлен позже.",
+            "menu:upscale": "🔍 Апскейл — функция расширенного режима и будет добавлена следующим безопасным шагом.",
         }
         await call.message.edit_text(texts[call.data], reply_markup=main_menu())
     await call.answer()
@@ -2931,7 +2856,7 @@ async def cb_meta_apply(call: types.CallbackQuery):
         else:
             updates["negative_prompt"] = str(meta["negative_prompt"])
     if action in {"settings", "all"}:
-        updates.update(metadata_settings_updates(meta, admin=call.from_user.id in ADMIN_IDS))
+        updates.update(metadata_settings_updates(meta, admin=has_moderation_access(call.from_user.id)))
     if not updates:
         await call.answer("В metadata нет подходящих полей для этого действия", show_alert=True)
         return
@@ -2969,7 +2894,7 @@ async def cancel_cmd(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("ar:edit:"))
 async def cb_ar_edit(call: types.CallbackQuery, state: FSMContext):
     s = get_settings(call.from_user.id)
-    if call.from_user.id not in ADMIN_IDS or not s.artraccoon_mode:
+    if not has_moderation_access(call.from_user.id) or not s.artraccoon_mode:
         await call.answer("Команда не найдена.", show_alert=True)
         return
     field = call.data.split(":", 2)[2]
@@ -2989,7 +2914,7 @@ async def cb_ar_edit(call: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "ar:test")
 async def cb_ar_test(call: types.CallbackQuery):
     s = get_settings(call.from_user.id)
-    if call.from_user.id not in ADMIN_IDS or not s.artraccoon_mode:
+    if not has_moderation_access(call.from_user.id) or not s.artraccoon_mode:
         await call.answer("Команда не найдена.", show_alert=True)
         return
     await call.message.edit_text(art_prompt_preview_text(s), parse_mode="HTML", reply_markup=artraccoon_menu())
@@ -2997,7 +2922,7 @@ async def cb_ar_test(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "ar:exit")
 async def cb_ar_exit(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         await call.answer("Команда не найдена.", show_alert=True)
         return
     patch_settings(call.from_user.id, artraccoon_mode=False, pending_prompt="", pending_original_prompt="", prompt_action="")
@@ -3025,7 +2950,7 @@ async def ar_char_neg_input(message: types.Message, state: FSMContext):
 def parse_setting_value(user_id: int, field: str, raw: str) -> tuple[dict | None, str]:
     text = raw.strip()
     s = get_settings(user_id)
-    advanced = (s.pro_mode and user_id in ADMIN_IDS) or s.artraccoon_mode
+    advanced = (s.advanced_generation_mode and has_moderation_access(user_id)) or s.artraccoon_mode
     try:
         if field == "size":
             m = re.fullmatch(r"\s*(\d{3,4})\s*[xх*]\s*(\d{3,4})\s*", text, re.I)
@@ -3148,14 +3073,14 @@ async def set_size(call: types.CallbackQuery):
         save_settings(call.from_user.id, s)
     elif name in RESOLUTIONS:
         w, h = RESOLUTIONS[name]
-        if not (s.pro_mode and call.from_user.id in ADMIN_IDS) and not s.artraccoon_mode and (w, h) not in SAFE_RESOLUTIONS:
+        if not (s.advanced_generation_mode and has_moderation_access(call.from_user.id)) and not s.artraccoon_mode and (w, h) not in SAFE_RESOLUTIONS:
             w, h = 832, 1216
             patch_settings(call.from_user.id, width=w, height=h)
             await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
             await call.answer("В обычном режиме доступны только безопасные размеры. Поставила 832x1216 🙂", show_alert=True)
             return
         patch_settings(call.from_user.id, width=w, height=h)
-    if not (s.pro_mode and call.from_user.id in ADMIN_IDS) and not s.artraccoon_mode and (get_settings(call.from_user.id).width, get_settings(call.from_user.id).height) not in SAFE_RESOLUTIONS:
+    if not (s.advanced_generation_mode and has_moderation_access(call.from_user.id)) and not s.artraccoon_mode and (get_settings(call.from_user.id).width, get_settings(call.from_user.id).height) not in SAFE_RESOLUTIONS:
         patch_settings(call.from_user.id, width=832, height=1216)
         await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
         await call.answer("В обычном режиме доступны только безопасные размеры. Поставила 832x1216 🙂", show_alert=True)
@@ -3165,8 +3090,8 @@ async def set_size(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:sampler:"))
 async def set_sampler(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+    if not has_moderation_access(call.from_user.id):
+        await call.answer("Эта функция доступна только модерации.", show_alert=True)
         return
     sampler = call.data.split(":", 2)[2]
     if sampler not in SAMPLERS:
@@ -3178,8 +3103,8 @@ async def set_sampler(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:uc:"))
 async def set_uc(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+    if not has_moderation_access(call.from_user.id):
+        await call.answer("Эта функция доступна только модерации.", show_alert=True)
         return
     uc = call.data.split(":", 2)[2]
     if uc not in UC_PRESETS:
@@ -3191,12 +3116,12 @@ async def set_uc(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:n:"))
 async def set_n(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
+    if not has_moderation_access(call.from_user.id):
         patch_settings(call.from_user.id, n_samples=1)
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+        await call.answer("Эта функция доступна только модерации.", show_alert=True)
         return
     val = int(call.data.split(":", 2)[2])
-    if val > 1 and not ((get_settings(call.from_user.id).pro_mode and call.from_user.id in ADMIN_IDS) or get_settings(call.from_user.id).artraccoon_mode):
+    if val > 1 and not (is_advanced_generation_enabled(call.from_user.id) or get_settings(call.from_user.id).artraccoon_mode):
         patch_settings(call.from_user.id, n_samples=1)
         await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
         await call.answer(ANLAS_WARNING, show_alert=True)
@@ -3209,7 +3134,7 @@ async def set_n(call: types.CallbackQuery):
 async def set_steps(call: types.CallbackQuery):
     val = int(call.data.split(":", 2)[2])
     s = get_settings(call.from_user.id)
-    if val > 28 and not (s.pro_mode and call.from_user.id in ADMIN_IDS) and not s.artraccoon_mode:
+    if val > 28 and not (s.advanced_generation_mode and has_moderation_access(call.from_user.id)) and not s.artraccoon_mode:
         val = 28
         patch_settings(call.from_user.id, steps=val)
         await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
@@ -3236,8 +3161,8 @@ async def set_seed(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:cfg:"))
 async def set_cfg(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+    if not has_moderation_access(call.from_user.id):
+        await call.answer("Эта функция доступна только модерации.", show_alert=True)
         return
     try:
         val = max(0.0, min(1.0, float(call.data.split(":", 2)[2])))
@@ -3250,8 +3175,8 @@ async def set_cfg(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:noise:"))
 async def set_noise(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+    if not has_moderation_access(call.from_user.id):
+        await call.answer("Эта функция доступна только модерации.", show_alert=True)
         return
     val = call.data.split(":", 2)[2]
     if val not in NOISE_SCHEDULES:
@@ -3263,8 +3188,8 @@ async def set_noise(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set:img2img:"))
 async def set_img2img(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+    if not has_moderation_access(call.from_user.id):
+        await call.answer("Эта функция доступна только модерации.", show_alert=True)
         return
     raw = call.data.split(":", 2)[2]
     try:
@@ -3277,16 +3202,16 @@ async def set_img2img(call: types.CallbackQuery):
     await call.answer("Img2Img обновлён")
 
 
-@dp.callback_query(F.data == "toggle:pro")
+@dp.callback_query(F.data.in_({"toggle:advanced", "toggle:pro"}))
 async def toggle_pro(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        patch_settings(call.from_user.id, pro_mode=False)
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
-        await call.message.answer("💎 Эта функция временно отключена.", reply_markup=main_menu())
+    if not has_moderation_access(call.from_user.id):
+        patch_settings(call.from_user.id, advanced_generation_mode=False)
+        await call.answer("Эта функция доступна только модерации.", show_alert=True)
+        await call.message.answer("Эта функция доступна только модерации.", reply_markup=main_menu())
         return
     s = get_settings(call.from_user.id)
-    new_value = not s.pro_mode
-    updates = {"pro_mode": new_value}
+    new_value = not s.advanced_generation_mode
+    updates = {"advanced_generation_mode": new_value}
     if not new_value:
         updates["n_samples"] = 1
         if s.steps > 28:
@@ -3295,12 +3220,12 @@ async def toggle_pro(call: types.CallbackQuery):
             updates.update({"width": 832, "height": 1216})
     patch_settings(call.from_user.id, **updates)
     await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
-    await call.answer("PRO / Анласы включены" if new_value else "Экономный режим включён")
+    await call.answer("⚙️ Расширенный режим включён" if new_value else "🌿 Обычный режим включён")
 
 @dp.callback_query(F.data == "toggle:furry")
 async def toggle_furry(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+    if not has_moderation_access(call.from_user.id):
+        await call.answer("Эта функция доступна только модерации.", show_alert=True)
         return
     s = get_settings(call.from_user.id)
     patch_settings(call.from_user.id, furry_mode=not s.furry_mode)
@@ -3310,8 +3235,8 @@ async def toggle_furry(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "toggle:background")
 async def toggle_background(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+    if not has_moderation_access(call.from_user.id):
+        await call.answer("Эта функция доступна только модерации.", show_alert=True)
         return
     s = get_settings(call.from_user.id)
     patch_settings(call.from_user.id, background_mode=not s.background_mode)
@@ -3321,8 +3246,8 @@ async def toggle_background(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "toggle:quality")
 async def toggle_quality(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+    if not has_moderation_access(call.from_user.id):
+        await call.answer("Эта функция доступна только модерации.", show_alert=True)
         return
     s = get_settings(call.from_user.id)
     patch_settings(call.from_user.id, add_quality_tags=not s.add_quality_tags)
@@ -3332,8 +3257,8 @@ async def toggle_quality(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "toggle:variety")
 async def toggle_variety(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("💎 Эта функция временно отключена.", show_alert=True)
+    if not has_moderation_access(call.from_user.id):
+        await call.answer("Эта функция доступна только модерации.", show_alert=True)
         return
     s = get_settings(call.from_user.id)
     patch_settings(call.from_user.id, variety_plus=not s.variety_plus)
@@ -3343,7 +3268,7 @@ async def toggle_variety(call: types.CallbackQuery):
 
 
 def _is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+    return has_moderation_access(user_id)
 
 
 def _dictionary_stats_text() -> str:

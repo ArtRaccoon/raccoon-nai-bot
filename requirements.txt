@@ -8,4 +8,3 @@ aiohttp_socks==0.*
 socksio==1.*
 fastapi
 uvicorn
-fal-client

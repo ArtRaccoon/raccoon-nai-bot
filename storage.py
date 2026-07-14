@@ -100,6 +100,10 @@ def get_settings(user_id: int) -> UserSettings:
         defaults = UserSettings().to_dict()
         if isinstance(raw, dict):
             defaults.update({k: v for k, v in raw.items() if k in defaults})
+            if raw.get("pro_mode") and not raw.get("advanced_generation_mode"):
+                defaults["advanced_generation_mode"] = True
+            if raw.get("generation_provider") == "fal":
+                defaults["generation_provider"] = "novelai"
         return UserSettings(**defaults)
 
 
@@ -117,6 +121,10 @@ def patch_settings(user_id: int, **kwargs) -> UserSettings:
         key = str(user_id)
         raw = data.get(key, {})
         user = _default_user(raw if isinstance(raw, dict) else {})
+        if user.get("pro_mode") and not user.get("advanced_generation_mode"):
+            user["advanced_generation_mode"] = True
+        if user.get("generation_provider") == "fal":
+            user["generation_provider"] = "novelai"
         settings_data = {k: v for k, v in user.items() if k in UserSettings().to_dict()}
         settings = UserSettings(**settings_data)
         for field, value in kwargs.items():

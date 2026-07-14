@@ -3,7 +3,6 @@
 import json
 
 INK_PER_GENERATION = 20
-FAL_INK_PER_GENERATION = 20
 
 PAYMENT_PACKAGES = {
     "ink_1000": {"id": "ink_1000", "title": "1000 ✒️ Чернил", "ink_amount": 1000, "generations": 50, "stars_price": 75, "description": "Пакет на 1000 ✒️ Чернил (примерно 50 генераций)"},

@@ -102,7 +102,6 @@ def presets_menu() -> InlineKeyboardMarkup:
 
 def settings_menu(pro: bool = True, show_pro_button: bool = True) -> InlineKeyboardMarkup:
     buttons = [
-        InlineKeyboardButton(text="🎨 Движок", callback_data="settings:provider"),
         InlineKeyboardButton(text="📐 Размер", callback_data="settings:size"),
         InlineKeyboardButton(text="👣 Шаги", callback_data="settings:steps"),
         InlineKeyboardButton(text="🧲 CFG / сила промта", callback_data="settings:scale"),
@@ -121,24 +120,13 @@ def settings_menu(pro: bool = True, show_pro_button: bool = True) -> InlineKeybo
             InlineKeyboardButton(text="🦝 Режимы", callback_data="settings:modes"),
         ])
     if show_pro_button:
-        buttons.append(InlineKeyboardButton(text="💎 PRO / Анласы", callback_data="toggle:pro"))
+        buttons.append(InlineKeyboardButton(text="⚙️ Расширенный режим", callback_data="toggle:advanced"))
     buttons.extend([
         InlineKeyboardButton(text="♻️ Сброс настроек", callback_data="reset:ask"),
         InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"),
         main_menu_button(),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
-
-def provider_menu(current: str = "novelai", fal_available: bool = False) -> InlineKeyboardMarkup:
-    nai_prefix = "✅ " if current == "novelai" else ""
-    fal_prefix = "✅ " if current == "fal" else ""
-    fal_text = f"{fal_prefix}⚡ fal.ai" if fal_available else "⚡ fal.ai (недоступен)"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{nai_prefix}🦝 NovelAI", callback_data="provider:set:novelai")],
-        [InlineKeyboardButton(text=fal_text, callback_data="provider:set:fal")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings")],
-        [main_menu_button()],
-    ])
 
 def confirm_reset_menu(kind: str = "settings") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -245,7 +233,7 @@ def dictionary_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="📤 Export", callback_data="dict:export"),
         InlineKeyboardButton(text="📥 Import", callback_data="dict:import"),
         InlineKeyboardButton(text="🧹 Cleanup rejected", callback_data="dict:cleanup"),
-        InlineKeyboardButton(text="⬅️ Назад в админку", callback_data="admin:menu"),
+        InlineKeyboardButton(text="⬅️ Назад в модерацию", callback_data="admin:menu"),
         main_menu_button(),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
@@ -257,7 +245,7 @@ def dictionary_pending_menu(tags: list[str]) -> InlineKeyboardMarkup:
     buttons.append(admin_back_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
-def admin_panel_menu() -> InlineKeyboardMarkup:
+def moderation_panel_menu() -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"),
         InlineKeyboardButton(text="⚙️ Дефолты обычного режима", callback_data="admin:basic_defaults"),
@@ -289,7 +277,7 @@ def characters_menu(characters: list | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
 def admin_back_button() -> InlineKeyboardButton:
-    return InlineKeyboardButton(text="⬅️ Назад в админку", callback_data="admin:menu")
+    return InlineKeyboardButton(text="⬅️ Назад в модерацию", callback_data="admin:menu")
 
 
 def admin_ar_vibe_menu() -> InlineKeyboardMarkup:
@@ -297,7 +285,7 @@ def admin_ar_vibe_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="👁 Показать вайб", callback_data="admin_ar_vibe:show"),
         InlineKeyboardButton(text="✏️ Изменить вайб", callback_data="admin_ar_vibe:set"),
         InlineKeyboardButton(text="🧹 Очистить вайб", callback_data="admin_ar_vibe:clear"),
-        InlineKeyboardButton(text="🏠 Назад в админку", callback_data="admin:menu"),
+        InlineKeyboardButton(text="🏠 Назад в модерацию", callback_data="admin:menu"),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
@@ -372,3 +360,8 @@ def admin_site_clone_menu() -> InlineKeyboardMarkup:
 def registry_fields_text(admin: bool = False) -> str:
     fields = ADMIN_SITE_CLONE_FIELDS if admin else BASIC_MENU_FIELDS
     return "\n".join(f"• {field.key} → {field.payload_path}" for field in fields)
+
+
+# Compatibility wrapper for older imports/calls.
+def admin_panel_menu() -> InlineKeyboardMarkup:
+    return moderation_panel_menu()

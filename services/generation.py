@@ -48,13 +48,13 @@ BASIC_DEFAULT_FIELDS = (
 
 def safe_generation_defaults() -> dict:
     defaults = UserSettings()
-    return {"width": defaults.width, "height": defaults.height, "steps": defaults.steps, "scale": defaults.scale, "seed": defaults.seed, "negative_prompt": defaults.negative_prompt, "model_name": defaults.model_name, "sampler": defaults.sampler, "n_samples": 1, "uc_preset": defaults.uc_preset, "cfg_rescale": defaults.cfg_rescale, "noise_schedule": defaults.noise_schedule, "variety_plus": defaults.variety_plus, "add_quality_tags": defaults.add_quality_tags, "img2img_strength": defaults.img2img_strength, "img2img_noise": defaults.img2img_noise, "pro_mode": False, "nai_site_mode": False}
+    return {"width": defaults.width, "height": defaults.height, "steps": defaults.steps, "scale": defaults.scale, "seed": defaults.seed, "negative_prompt": defaults.negative_prompt, "model_name": defaults.model_name, "sampler": defaults.sampler, "n_samples": 1, "uc_preset": defaults.uc_preset, "cfg_rescale": defaults.cfg_rescale, "noise_schedule": defaults.noise_schedule, "variety_plus": defaults.variety_plus, "add_quality_tags": defaults.add_quality_tags, "img2img_strength": defaults.img2img_strength, "img2img_noise": defaults.img2img_noise, "advanced_generation_mode": False, "pro_mode": False, "nai_site_mode": False}
 
 
 def factory_basic_defaults() -> dict:
     defaults = UserSettings()
     data = {field: getattr(defaults, field) for field in BASIC_DEFAULT_FIELDS}
-    data.update({"width": 832, "height": 1216, "n_samples": 1, "seed": -1, "pro_mode": False, "nai_site_mode": False})
+    data.update({"width": 832, "height": 1216, "n_samples": 1, "seed": -1, "advanced_generation_mode": False, "pro_mode": False, "nai_site_mode": False})
     return data
 
 
@@ -97,7 +97,7 @@ def sanitize_basic_defaults(raw: dict | None, *, clamp_steps: bool = True) -> di
     defaults["negative_prompt"] = str(defaults.get("negative_prompt") or "")
     defaults["add_quality_tags"] = bool(defaults.get("add_quality_tags"))
     defaults["variety_plus"] = bool(defaults.get("variety_plus"))
-    defaults.update({"n_samples": 1, "seed": -1, "pro_mode": False, "nai_site_mode": False})
+    defaults.update({"n_samples": 1, "seed": -1, "advanced_generation_mode": False, "pro_mode": False, "nai_site_mode": False})
     return defaults
 
 
@@ -195,7 +195,7 @@ def cooldown_remaining(user_id: int, admin_ids: list[int]) -> int:
 
 def apply_anlas_safe_defaults(user_id: int, admin_ids: list[int]):
     s = get_settings(user_id)
-    if s.pro_mode and user_id in admin_ids:
+    if (s.advanced_generation_mode or s.pro_mode) and user_id in admin_ids:
         return s
     return patch_settings(user_id, **saved_basic_defaults())
 
