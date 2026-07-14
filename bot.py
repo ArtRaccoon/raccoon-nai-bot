@@ -21,7 +21,7 @@ from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRE
 from keyboards import (
     main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
     after_generation_menu, generation_item_menu, artraccoon_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu, moderation_dictionary_menu, dictionary_menu, dictionary_pending_menu, admin_panel_menu,
-    admin_ar_vibe_menu, admin_nai_debug_menu, admin_site_clone_menu, registry_fields_text, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu, characters_menu, purchase_menu, limit_exhausted_menu, quick_steps_menu,
+    admin_ar_vibe_menu, admin_nai_debug_menu, admin_site_clone_menu, registry_fields_text, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu, characters_menu, purchase_menu, ink_packages_menu, limit_exhausted_menu, quick_steps_menu, orientation_menu,
 )
 from app.services.nai_client import (
     NovelAIClient, NovelAIError, sanitize_payload,
@@ -632,7 +632,7 @@ def purchase_text(user_id: int) -> str:
     for pkg in PAYMENT_PACKAGES.values():
         package_lines.append(f"<b>{pkg['ink_amount']} ✒️</b> — {pkg['stars_price']} Stars\n≈ {pkg['generations']} генераций")
     return (
-        f"🛒 <b>Shop</b>\n\n"
+        f"🛒 <b>Магазин</b>\n\n"
         "Бесплатно: 10 генераций в день.\n"
         "💎 Raccoon+: 100 обычных генераций в день + 100 HQ на 30 дней.\n"
         "HQ тратится на >28 шагов, большие размеры или несколько картинок.\n"
@@ -2415,8 +2415,36 @@ async def cb_retry(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "quick:steps")
 async def cb_quick_steps(call: types.CallbackQuery):
-    await call.message.answer("👣 Change Steps:", reply_markup=quick_steps_menu(is_advanced_user(call.from_user.id)))
+    await call.message.answer("👣 Изменить Steps:", reply_markup=quick_steps_menu(is_advanced_user(call.from_user.id)))
     await call.answer()
+
+
+@dp.callback_query(F.data == "quick:after")
+async def cb_quick_after(call: types.CallbackQuery):
+    await call.message.edit_text("Готово. Что дальше?", reply_markup=after_generation_menu())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "quick:steps_input")
+async def cb_quick_steps_input(call: types.CallbackQuery, state: FSMContext):
+    await state.set_state(GenState.waiting_setting)
+    await state.update_data(setting_field="steps", return_to="after_generation")
+    await call.message.answer(SETTING_PROMPTS["steps"] + "\n\n/cancel — отменить ввод.", parse_mode="HTML")
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("quick:set_steps:"))
+async def cb_quick_set_steps(call: types.CallbackQuery):
+    val = int(call.data.split(":", 2)[2])
+    if val > 28 and not is_advanced_user(call.from_user.id):
+        val = 28
+        patch_settings(call.from_user.id, steps=val)
+        await call.message.edit_text("👣 Steps обновлены: 28. В обычном режиме максимум 28.", reply_markup=after_generation_menu())
+        await call.answer("Steps обновлены", show_alert=True)
+        return
+    patch_settings(call.from_user.id, steps=val)
+    await call.message.edit_text(f"👣 Steps обновлены: {val}", reply_markup=after_generation_menu())
+    await call.answer("Steps обновлены")
 
 
 @dp.callback_query(F.data == "prompt:show_original")
@@ -2496,6 +2524,8 @@ async def cb_paid(call: types.CallbackQuery):
     action = parts[1] if len(parts) > 1 else "buy"
     if action == "buy":
         await call.message.answer(purchase_text(call.from_user.id), parse_mode="HTML", reply_markup=purchase_menu())
+    elif action == "ink":
+        await call.message.answer("✒ <b>Купить Чернила</b>", parse_mode="HTML", reply_markup=ink_packages_menu())
     elif action == "balance":
         await call.message.answer(user_balance_text(call.from_user.id), parse_mode="HTML", reply_markup=purchase_menu())
     elif action == "pkg" and len(parts) >= 3:
@@ -2571,7 +2601,7 @@ async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):
     field = call.data.split(":", 1)[1]
     s = get_settings(call.from_user.id)
     advanced = is_advanced_user(call.from_user.id)
-    basic_fields = {"model", "size", "sampler", "steps", "scale", "seed", "negative"}
+    basic_fields = {"model", "orientation", "size", "sampler", "steps", "scale", "seed", "negative"}
     if field not in basic_fields and not advanced:
         patch_settings(call.from_user.id, n_samples=1)
         await call.answer("💎 Доступно в Raccoon+.", show_alert=True)
@@ -2582,6 +2612,10 @@ async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):
         return
     if field == "size":
         await call.message.edit_text("📐 Выбери размер:", reply_markup=size_menu())
+        await call.answer()
+        return
+    if field == "orientation":
+        await call.message.edit_text("📐 Выбери ориентацию:", reply_markup=orientation_menu(s.width, s.height))
         await call.answer()
         return
     if field == "sampler":
@@ -2608,7 +2642,7 @@ async def cb_setting_text_input(call: types.CallbackQuery, state: FSMContext):
         await call.answer()
         return
     if field in {"modes", "advanced_nai"}:
-        await call.message.edit_text("⚙ Advanced NovelAI:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags, s.variety_plus))
+        await call.message.edit_text("⚙ Расширенные NovelAI:", reply_markup=modes_menu(s.furry_mode, s.background_mode, s.add_quality_tags, s.variety_plus))
         await call.answer()
         return
     prompt = SETTING_PROMPTS.get(field)
@@ -3086,6 +3120,9 @@ async def setting_text_input(message: types.Message, state: FSMContext):
         return
     await state.clear()
     patch_settings(message.from_user.id, **updates)
+    if data.get("return_to") == "after_generation":
+        await message.answer(response, reply_markup=after_generation_menu())
+        return
     await message.answer(response, reply_markup=settings_markup_for(message.from_user.id))
     await message.answer(settings_text(message.from_user.id), reply_markup=settings_markup_for(message.from_user.id), parse_mode="HTML")
 
@@ -3145,6 +3182,23 @@ async def set_size(call: types.CallbackQuery):
         return
     await call.message.edit_text(settings_text(call.from_user.id), reply_markup=settings_markup_for(call.from_user.id), parse_mode="HTML")
     await call.answer("Размер обновлён")
+
+
+@dp.callback_query(F.data.startswith("set:orientation:"))
+async def set_orientation(call: types.CallbackQuery):
+    orientation = call.data.split(":", 2)[2]
+    sizes = {
+        "portrait": (832, 1216),
+        "landscape": (1216, 832),
+        "square": (1024, 1024),
+    }
+    if orientation not in sizes:
+        await call.answer("Неизвестная ориентация", show_alert=True)
+        return
+    w, h = sizes[orientation]
+    patch_settings(call.from_user.id, width=w, height=h)
+    await call.message.edit_text("📐 Выбери ориентацию:", reply_markup=orientation_menu(w, h))
+    await call.answer("Ориентация обновлена")
 
 @dp.callback_query(F.data.startswith("set:sampler:"))
 async def set_sampler(call: types.CallbackQuery):

@@ -374,7 +374,7 @@ def record_successful_stars_payment_once(user_id: int, package: dict, payment_id
             except ValueError:
                 pass
             user["pro_access_until"] = (base + timedelta(days=int(package.get("days", 30) or 30))).isoformat()
-            user["hq_balance"] = int(package.get("hq_amount", 100) or 100)
+            user["hq_balance"] = int(user.get("hq_balance", 0) or 0) + int(package.get("hq_amount", 100) or 100)
         else:
             user["paid_generations_balance"] = new_balance
         user["total_paid_stars"] = int(user.get("total_paid_stars", 0) or 0) + stars_price

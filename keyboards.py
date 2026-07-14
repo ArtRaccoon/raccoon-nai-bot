@@ -12,7 +12,7 @@ def main_menu_button() -> InlineKeyboardButton:
 def main_menu(channel_url: str = "", moderator: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text="🎨 Новый промпт", callback_data="menu:gen"),
-        InlineKeyboardButton(text="🛒 Shop", callback_data="paid:buy"),
+        InlineKeyboardButton(text="🛒 Магазин", callback_data="paid:buy"),
         InlineKeyboardButton(text="💬 Связь с админом", callback_data="support:start"),
         InlineKeyboardButton(text="💖 Поддержать проект", callback_data="donate:open"),
         InlineKeyboardButton(text="❓ Помощь", callback_data="menu:howto"),
@@ -24,17 +24,22 @@ def main_menu(channel_url: str = "", moderator: bool = False) -> InlineKeyboardM
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
 def purchase_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✒ Купить Чернила", callback_data="paid:ink")],
+        [InlineKeyboardButton(text="💎 Купить Raccoon+ — 699 Stars", callback_data=f"paid:pkg:{RACCOON_PLUS_PACKAGE['id']}")],
+        [InlineKeyboardButton(text="❤️ Поддержать проект", callback_data="donate:open")],
+        [InlineKeyboardButton(text="📦 Мой баланс", callback_data="paid:balance")],
+        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu:main")],
+    ])
+
+
+def ink_packages_menu() -> InlineKeyboardMarkup:
     buttons = [
-        InlineKeyboardButton(text="💎 Buy Raccoon+ — 699 Stars", callback_data=f"paid:pkg:{RACCOON_PLUS_PACKAGE['id']}"),
-        InlineKeyboardButton(text="✒ Buy Ink", callback_data="paid:ink"),
-        InlineKeyboardButton(text="❤️ Support Project", callback_data="donate:open"),
-    ]
-    buttons.extend([
         InlineKeyboardButton(text=f"⭐ {pkg['ink_amount']} ✒️ — {pkg['stars_price']} Stars (≈ {pkg['generations']} ген.)", callback_data=f"paid:pkg:{pkg_id}")
         for pkg_id, pkg in PAYMENT_PACKAGES.items()
-    ])
+    ]
     buttons.append(InlineKeyboardButton(text="📦 Мой баланс", callback_data="paid:balance"))
-    buttons.append(InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu:main"))
+    buttons.append(InlineKeyboardButton(text="⬅️ Назад в магазин", callback_data="paid:buy"))
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
 def limit_exhausted_menu() -> InlineKeyboardMarkup:
@@ -92,7 +97,7 @@ def after_generation_menu() -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text="🔁 Повторить", callback_data="quick:retry"),
         InlineKeyboardButton(text="✏️ Изменить промпт", callback_data="quick:edit_prompt"),
-        InlineKeyboardButton(text="👣 Change Steps", callback_data="quick:steps"),
+        InlineKeyboardButton(text="👣 Изменить Steps", callback_data="quick:steps"),
         InlineKeyboardButton(text="⬆️ Up", callback_data="paid:upscale"),
         main_menu_button(),
     ]
@@ -109,10 +114,10 @@ def presets_menu() -> InlineKeyboardMarkup:
 
 def settings_menu(pro: bool = True, show_pro_button: bool = True) -> InlineKeyboardMarkup:
     buttons = [
-        InlineKeyboardButton(text="🎨 Model", callback_data="settings:model"),
-        InlineKeyboardButton(text="📐 Orientation", callback_data="set:size:swap"),
+        InlineKeyboardButton(text="🎨 Модель", callback_data="settings:model"),
+        InlineKeyboardButton(text="📐 Ориентация", callback_data="settings:orientation"),
         InlineKeyboardButton(text="📐 Размер", callback_data="settings:size"),
-        InlineKeyboardButton(text="🎲 Sampler", callback_data="settings:sampler"),
+        InlineKeyboardButton(text="🎲 Сэмплер", callback_data="settings:sampler"),
         InlineKeyboardButton(text="👣 Шаги", callback_data="settings:steps"),
         InlineKeyboardButton(text="🧲 CFG / сила промта", callback_data="settings:scale"),
         InlineKeyboardButton(text="🎲 Seed", callback_data="settings:seed"),
@@ -121,14 +126,14 @@ def settings_menu(pro: bool = True, show_pro_button: bool = True) -> InlineKeybo
     if pro:
         buttons.extend([
             InlineKeyboardButton(text="🖼 Кол-во картинок", callback_data="settings:n"),
-            InlineKeyboardButton(text="⚙ Advanced NovelAI", callback_data="settings:advanced_nai"),
+            InlineKeyboardButton(text="⚙ Расширенные NovelAI", callback_data="settings:advanced_nai"),
             InlineKeyboardButton(text="🧪 UC-пресет", callback_data="settings:uc"),
             InlineKeyboardButton(text="♻️ CFG rescale", callback_data="settings:cfg"),
             InlineKeyboardButton(text="🌊 Noise", callback_data="settings:noise"),
             InlineKeyboardButton(text="📎 Img2Img сила", callback_data="settings:img2img"),
         ])
     if show_pro_button:
-        buttons.append(InlineKeyboardButton(text="💎 Raccoon+ toggle", callback_data="toggle:advanced"))
+        buttons.append(InlineKeyboardButton(text="💎 Переключить Raccoon+", callback_data="toggle:advanced"))
     buttons.extend([
         InlineKeyboardButton(text="♻️ Сброс настроек", callback_data="reset:ask"),
         InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"),
@@ -139,10 +144,26 @@ def settings_menu(pro: bool = True, show_pro_button: bool = True) -> InlineKeybo
 
 def quick_steps_menu(pro: bool = False) -> InlineKeyboardMarkup:
     values = [18, 23, 25, 28] + ([32, 40, 50, 60] if pro else [])
-    buttons = [InlineKeyboardButton(text=str(v), callback_data=f"set:steps:{v}") for v in values]
-    buttons.append(InlineKeyboardButton(text="Manual input", callback_data="settings_input:steps"))
-    buttons.append(InlineKeyboardButton(text="Back", callback_data="menu:main"))
+    buttons = [InlineKeyboardButton(text=str(v), callback_data=f"quick:set_steps:{v}") for v in values]
+    buttons.append(InlineKeyboardButton(text="Ввести вручную", callback_data="quick:steps_input"))
+    buttons.append(InlineKeyboardButton(text="Назад", callback_data="quick:after"))
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
+
+
+def orientation_menu(width: int, height: int) -> InlineKeyboardMarkup:
+    choices = [
+        ("portrait", "📱 Портрет", (832, 1216)),
+        ("landscape", "🖼 Альбом", (1216, 832)),
+        ("square", "◼ Квадрат", (1024, 1024)),
+    ]
+    buttons = []
+    current = (int(width), int(height))
+    for key, title, size in choices:
+        marker = " ✅" if current == size else ""
+        buttons.append(InlineKeyboardButton(text=f"{title}{marker}", callback_data=f"set:orientation:{key}"))
+    buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"))
+    buttons.append(main_menu_button())
+    return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
 def confirm_reset_menu(kind: str = "settings") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[

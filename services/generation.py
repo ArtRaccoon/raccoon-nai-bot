@@ -193,6 +193,9 @@ def reserve_generation_credit(user_id: int, admin_ids: list[int]) -> dict:
     s = enforce_generation_limits(user_id, admin_ids)
     cost = hq_cost(s)
     if cost:
+        if user_id in admin_ids and has_raccoon_plus(user_id, admin_ids):
+            patch_settings(user_id, last_generation_started_at=datetime.now(timezone.utc).isoformat())
+            return {"user_id": user_id, "kind": "admin_hq", "cost": cost}
         if not has_raccoon_plus(user_id, admin_ids) or int(s.hq_balance or 0) < cost:
             return {"user_id": user_id, "kind": "none"}
         patch_settings(user_id, hq_balance=int(s.hq_balance or 0) - cost, last_generation_started_at=datetime.now(timezone.utc).isoformat())
