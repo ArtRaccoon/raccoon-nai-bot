@@ -3,7 +3,7 @@ import os
 import threading
 from pathlib import Path
 from config_defaults import UserSettings
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 DATA_DIR = Path("data")
 USERS_FILE = DATA_DIR / "users.json"
@@ -359,10 +359,24 @@ def record_successful_stars_payment_once(user_id: int, package: dict, payment_id
         if pid and any(str(item.get("payment_id")) == pid for item in records if isinstance(item, dict)):
             return False, current_balance
 
+        is_raccoon_plus = str(package.get("id") or "") == "raccoon_plus_30d"
         ink_amount = int(package.get("ink_amount", package.get("generations", 0)) or 0)
         stars_price = int(package.get("stars_price", 0) or 0)
         new_balance = current_balance + ink_amount
-        user["paid_generations_balance"] = new_balance
+        if is_raccoon_plus:
+            base = datetime.now(timezone.utc)
+            try:
+                existing = datetime.fromisoformat(str(user.get("pro_access_until") or ""))
+                if existing.tzinfo is None:
+                    existing = existing.replace(tzinfo=timezone.utc)
+                if existing > base:
+                    base = existing
+            except ValueError:
+                pass
+            user["pro_access_until"] = (base + timedelta(days=int(package.get("days", 30) or 30))).isoformat()
+            user["hq_balance"] = int(user.get("hq_balance", 0) or 0) + int(package.get("hq_amount", 100) or 100)
+        else:
+            user["paid_generations_balance"] = new_balance
         user["total_paid_stars"] = int(user.get("total_paid_stars", 0) or 0) + stars_price
 
         now = datetime.now(timezone.utc).isoformat()
@@ -374,6 +388,7 @@ def record_successful_stars_payment_once(user_id: int, package: dict, payment_id
             "package_id": str(package.get("id") or ""),
             "generations": int(package.get("generations", 0) or 0),
             "ink_amount": ink_amount,
+            "hq_amount": int(package.get("hq_amount", 0) or 0),
             "amount": stars_price,
             "currency": "XTR",
             "status": "succeeded",
@@ -383,4 +398,4 @@ def record_successful_stars_payment_once(user_id: int, package: dict, payment_id
         })
         _save_payments_unlocked(records)
         _save_all_unlocked(data)
-        return True, new_balance
+        return True, int(user.get("hq_balance", new_balance) if is_raccoon_plus else new_balance)

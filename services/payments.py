@@ -11,6 +11,16 @@ PAYMENT_PACKAGES = {
     "ink_16000": {"id": "ink_16000", "title": "16000 ✒️ Чернил", "ink_amount": 16000, "generations": 800, "stars_price": 799, "description": "Пакет на 16000 ✒️ Чернил (примерно 800 генераций)"},
 }
 
+RACCOON_PLUS_PACKAGE = {
+    "id": "raccoon_plus_30d",
+    "title": "💎 Raccoon+",
+    "stars_price": 699,
+    "description": "💎 Raccoon+ на 30 дней: 100 обычных генераций в день, 100 HQ генераций и расширенные NovelAI функции.",
+    "days": 30,
+    "daily_limit": 100,
+    "hq_amount": 100,
+}
+
 
 def make_payment_payload(user_id: int, package_id: str) -> str:
     return json.dumps({"user_id": int(user_id), "package_id": str(package_id)}, separators=(",", ":"), ensure_ascii=False)

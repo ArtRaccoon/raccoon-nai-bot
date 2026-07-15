@@ -1,7 +1,7 @@
 """Generation settings, quota and safe file helpers."""
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config_defaults import MODELS, NOISE_SCHEDULES, SAMPLERS, UC_PRESETS, UserSettings
@@ -9,7 +9,9 @@ from storage import get_config_value, get_settings, patch_settings
 from services.payments import INK_PER_GENERATION
 
 SAFE_RESOLUTIONS = {(512, 768), (768, 1344), (832, 1216), (1024, 1024), (1216, 832)}
+LARGE_RESOLUTIONS = {(1024, 1536), (1536, 1024), (1216, 1728), (1728, 1216)}
 DAILY_GENERATION_LIMIT = 10
+RACCOON_PLUS_DAILY_LIMIT = 100
 NON_ADMIN_COOLDOWN_SECONDS = 60
 GENERATION_TIMEOUT_SECONDS = 180
 TMP_DIR = Path("data/tmp_images")
@@ -17,33 +19,6 @@ GENERATED_DIR = Path("data/generated")
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 # FIXME: add safe generated-image cleanup by age and total storage size when retention policy is defined.
-
-
-def assemble_ar_prompt(s, character_prompt: str) -> str:
-    return ", ".join(part.strip() for part in [s.artraccoon_base_prompt, character_prompt] if part.strip())
-
-
-def ar_payload_mode(s, nai_model: str = "") -> str:
-    if s.artraccoon_force_concat:
-        return "fallback concat (forced)"
-    model = nai_model or MODELS.get(s.model_name, "")
-    return "Character Payload for v4/v4.5" if model.startswith(("nai-diffusion-4", "nai-diffusion-4-5")) else "fallback concat"
-
-
-BASIC_DEFAULT_FIELDS = (
-    "model_name",
-    "width",
-    "height",
-    "steps",
-    "scale",
-    "sampler",
-    "uc_preset",
-    "cfg_rescale",
-    "noise_schedule",
-    "negative_prompt",
-    "add_quality_tags",
-    "variety_plus",
-)
 
 
 def safe_generation_defaults() -> dict:
@@ -109,12 +84,31 @@ def basic_defaults_from_settings(settings: UserSettings) -> dict:
     return sanitize_basic_defaults({field: getattr(settings, field) for field in BASIC_DEFAULT_FIELDS}, clamp_steps=False)
 
 
-def artraccoon_prompt_defaults() -> dict:
-    return {"artraccoon_base_prompt": "", "artraccoon_base_uc": "", "artraccoon_character_prompt": "", "artraccoon_character_uc": "", "artraccoon_character_negative": "", "artraccoon_character_position": ""}
-
-
 def today_key() -> str:
     return datetime.now(timezone.utc).date().isoformat()
+
+
+def raccoon_plus_until(s) -> datetime | None:
+    raw = str(getattr(s, "pro_access_until", "") or "")
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def has_raccoon_plus(user_id: int, admin_ids: list[int]) -> bool:
+    s = get_settings(user_id)
+    if user_id in admin_ids and bool(s.advanced_generation_mode or s.pro_mode):
+        return True
+    until = raccoon_plus_until(s)
+    return bool(until and until > datetime.now(timezone.utc))
+
+
+def daily_limit_for(user_id: int, admin_ids: list[int]) -> int:
+    return RACCOON_PLUS_DAILY_LIMIT if has_raccoon_plus(user_id, admin_ids) else DAILY_GENERATION_LIMIT
 
 
 def daily_count_for(s) -> int:
@@ -124,9 +118,33 @@ def daily_count_for(s) -> int:
 
 
 def free_remaining_today(user_id: int, admin_ids: list[int]) -> int | None:
-    if user_id in admin_ids:
-        return None
-    return max(0, DAILY_GENERATION_LIMIT - daily_count_for(get_settings(user_id)))
+    return max(0, daily_limit_for(user_id, admin_ids) - daily_count_for(get_settings(user_id)))
+
+
+def is_hq_request(s) -> bool:
+    return int(s.steps or 0) > 28 or int(s.n_samples or 1) > 1 or (int(s.width or 0), int(s.height or 0)) not in SAFE_RESOLUTIONS
+
+
+def hq_cost(s) -> int:
+    return max(1, int(s.n_samples or 1)) if is_hq_request(s) else 0
+
+
+def enforce_generation_limits(user_id: int, admin_ids: list[int]):
+    s = get_settings(user_id)
+    if has_raccoon_plus(user_id, admin_ids):
+        steps = max(1, min(60, int(s.steps or 28)))
+        samples = max(1, min(4, int(s.n_samples or 1)))
+        return patch_settings(user_id, steps=steps, n_samples=samples)
+    updates = {}
+    if int(s.steps or 28) > 28:
+        updates["steps"] = 28
+    if int(s.n_samples or 1) != 1:
+        updates["n_samples"] = 1
+    if (int(s.width or 0), int(s.height or 0)) not in SAFE_RESOLUTIONS:
+        updates.update({"width": 832, "height": 1216})
+    if int(getattr(s, "hq_balance", 0) or 0):
+        updates["hq_balance"] = 0
+    return patch_settings(user_id, **updates) if updates else s
 
 
 def remaining_generations(user_id: int, admin_ids: list[int]) -> int | None:
@@ -141,11 +159,17 @@ def mark_generation_started(user_id: int, admin_ids: list[int]) -> None:
 
 
 def reserve_generation_credit(user_id: int, admin_ids: list[int]) -> dict:
-    s = get_settings(user_id)
-    if user_id in admin_ids:
-        patch_settings(user_id, last_generation_started_at=datetime.now(timezone.utc).isoformat())
-        return {"user_id": user_id, "kind": "admin"}
-    if daily_count_for(s) < DAILY_GENERATION_LIMIT:
+    s = enforce_generation_limits(user_id, admin_ids)
+    cost = hq_cost(s)
+    if cost:
+        if user_id in admin_ids and has_raccoon_plus(user_id, admin_ids):
+            patch_settings(user_id, last_generation_started_at=datetime.now(timezone.utc).isoformat())
+            return {"user_id": user_id, "kind": "admin_hq", "cost": cost}
+        if not has_raccoon_plus(user_id, admin_ids) or int(s.hq_balance or 0) < cost:
+            return {"user_id": user_id, "kind": "none"}
+        patch_settings(user_id, hq_balance=int(s.hq_balance or 0) - cost, last_generation_started_at=datetime.now(timezone.utc).isoformat())
+        return {"user_id": user_id, "kind": "hq", "cost": cost}
+    if daily_count_for(s) < daily_limit_for(user_id, admin_ids):
         patch_settings(user_id, last_generation_started_at=datetime.now(timezone.utc).isoformat())
         return {"user_id": user_id, "kind": "free"}
     if int(s.paid_generations_balance or 0) >= INK_PER_GENERATION:
@@ -157,7 +181,7 @@ def reserve_generation_credit(user_id: int, admin_ids: list[int]) -> dict:
 def commit_generation_credit(reservation: dict) -> None:
     user_id = int(reservation.get("user_id", 0) or 0)
     kind = reservation.get("kind")
-    if not user_id or kind in {"admin", "none"}:
+    if not user_id or kind in {"none"}:
         return
     s = get_settings(user_id)
     updates = {"total_generations_used": int(s.total_generations_used or 0) + 1}
@@ -166,17 +190,20 @@ def commit_generation_credit(reservation: dict) -> None:
         updates.update({"daily_generation_date": today_key(), "daily_generation_count": used, "free_daily_date": today_key(), "free_daily_used": used})
     elif kind == "paid":
         updates["paid_generations_used"] = int(s.paid_generations_used or 0) + 1
+    elif kind == "hq":
+        updates["hq_used"] = int(getattr(s, "hq_used", 0) or 0) + int(reservation.get("cost", 1) or 1)
     patch_settings(user_id, **updates)
 
 
 def rollback_generation_credit(reservation: dict) -> None:
-    if reservation.get("kind") != "paid":
-        return
     user_id = int(reservation.get("user_id", 0) or 0)
     if not user_id:
         return
     s = get_settings(user_id)
-    patch_settings(user_id, paid_generations_balance=int(s.paid_generations_balance or 0) + INK_PER_GENERATION)
+    if reservation.get("kind") == "paid":
+        patch_settings(user_id, paid_generations_balance=int(s.paid_generations_balance or 0) + INK_PER_GENERATION)
+    elif reservation.get("kind") == "hq":
+        patch_settings(user_id, hq_balance=int(getattr(s, "hq_balance", 0) or 0) + int(reservation.get("cost", 1) or 1))
 
 
 def cooldown_remaining(user_id: int, admin_ids: list[int]) -> int:
@@ -194,10 +221,7 @@ def cooldown_remaining(user_id: int, admin_ids: list[int]) -> int:
 
 
 def apply_anlas_safe_defaults(user_id: int, admin_ids: list[int]):
-    s = get_settings(user_id)
-    if (s.advanced_generation_mode or s.pro_mode) and user_id in admin_ids:
-        return s
-    return patch_settings(user_id, **saved_basic_defaults())
+    return enforce_generation_limits(user_id, admin_ids)
 
 
 def safe_generated_image_path(user_id: int, timestamp: str, idx: int) -> Path:
