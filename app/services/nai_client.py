@@ -115,7 +115,7 @@ class NovelAIClient:
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/x-zip-compressed, application/zip, image/png, application/json",
             "Content-Type": "application/json",
-            "User-Agent": "ArtRaccoon-NovelAI-Telegram-Bot/0.1",
+            "User-Agent": "Raccoon-NovelAI-Telegram-Bot/0.1",
         }
 
     def build_prompt(self, prompt: str, settings: UserSettings) -> str:
@@ -141,11 +141,8 @@ class NovelAIClient:
     ) -> dict:
         model = self.default_model or MODELS.get(settings.model_name) or SAFE_DEFAULT_MODEL
         is_v4_model = _is_v4_model(model)
-        character_prompt = settings.artraccoon_character_prompt.strip() if settings.artraccoon_mode else ""
-        character_uc = (
-            settings.artraccoon_character_uc.strip()
-            or settings.artraccoon_character_negative.strip()
-        ) if settings.artraccoon_mode else ""
+        character_prompt = ""
+        character_uc = ""
         extra_characters = _extra_characters(settings)
         has_any_character = bool(character_prompt or any(ch["prompt"] for ch in extra_characters))
         has_character_payload = bool(
@@ -156,10 +153,6 @@ class NovelAIClient:
         )
 
         uc_parts = [UC_PRESETS.get(settings.uc_preset, "")]
-        if settings.artraccoon_mode:
-            uc_parts.append(settings.artraccoon_base_uc)
-            if not has_character_payload:
-                uc_parts.append(character_uc)
         if not has_character_payload:
             uc_parts.extend(ch["uc"] for ch in extra_characters)
         if settings.negative_prompt.strip():
@@ -168,8 +161,6 @@ class NovelAIClient:
 
         prompt_for_payload = prompt
         concat_character_prompts = []
-        if settings.artraccoon_mode and character_prompt and not has_character_payload:
-            concat_character_prompts.append(character_prompt)
         if not has_character_payload:
             concat_character_prompts.extend(ch["prompt"] for ch in extra_characters)
         if concat_character_prompts:

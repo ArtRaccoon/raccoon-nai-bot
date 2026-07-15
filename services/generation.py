@@ -21,33 +21,6 @@ GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 # FIXME: add safe generated-image cleanup by age and total storage size when retention policy is defined.
 
 
-def assemble_ar_prompt(s, character_prompt: str) -> str:
-    return ", ".join(part.strip() for part in [s.artraccoon_base_prompt, character_prompt] if part.strip())
-
-
-def ar_payload_mode(s, nai_model: str = "") -> str:
-    if s.artraccoon_force_concat:
-        return "fallback concat (forced)"
-    model = nai_model or MODELS.get(s.model_name, "")
-    return "Character Payload for v4/v4.5" if model.startswith(("nai-diffusion-4", "nai-diffusion-4-5")) else "fallback concat"
-
-
-BASIC_DEFAULT_FIELDS = (
-    "model_name",
-    "width",
-    "height",
-    "steps",
-    "scale",
-    "sampler",
-    "uc_preset",
-    "cfg_rescale",
-    "noise_schedule",
-    "negative_prompt",
-    "add_quality_tags",
-    "variety_plus",
-)
-
-
 def safe_generation_defaults() -> dict:
     defaults = UserSettings()
     return {"width": defaults.width, "height": defaults.height, "steps": defaults.steps, "scale": defaults.scale, "seed": defaults.seed, "negative_prompt": defaults.negative_prompt, "model_name": defaults.model_name, "sampler": defaults.sampler, "n_samples": 1, "uc_preset": defaults.uc_preset, "cfg_rescale": defaults.cfg_rescale, "noise_schedule": defaults.noise_schedule, "variety_plus": defaults.variety_plus, "add_quality_tags": defaults.add_quality_tags, "img2img_strength": defaults.img2img_strength, "img2img_noise": defaults.img2img_noise, "advanced_generation_mode": False, "pro_mode": False, "nai_site_mode": False}
@@ -109,10 +82,6 @@ def saved_basic_defaults() -> dict:
 
 def basic_defaults_from_settings(settings: UserSettings) -> dict:
     return sanitize_basic_defaults({field: getattr(settings, field) for field in BASIC_DEFAULT_FIELDS}, clamp_steps=False)
-
-
-def artraccoon_prompt_defaults() -> dict:
-    return {"artraccoon_base_prompt": "", "artraccoon_base_uc": "", "artraccoon_character_prompt": "", "artraccoon_character_uc": "", "artraccoon_character_negative": "", "artraccoon_character_position": ""}
 
 
 def today_key() -> str:

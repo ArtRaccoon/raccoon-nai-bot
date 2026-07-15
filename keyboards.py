@@ -18,7 +18,7 @@ def main_menu(channel_url: str = "", moderator: bool = False) -> InlineKeyboardM
         InlineKeyboardButton(text="❓ Помощь", callback_data="menu:howto"),
     ]
     if moderator:
-        buttons.insert(2, InlineKeyboardButton(text="🛡 Moderation", callback_data="admin:menu"))
+        buttons.insert(2, InlineKeyboardButton(text="🛡 Модерация", callback_data="admin:menu"))
     if channel_url:
         buttons.append(InlineKeyboardButton(text="📢 Канал", url=channel_url))
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
@@ -54,7 +54,6 @@ def pending_prompt_menu(has_image: bool = False, pro: bool = False, compact: boo
         InlineKeyboardButton(text="✅ Генерировать", callback_data="prompt:confirm"),
         InlineKeyboardButton(text="✏️ Редактировать", callback_data="prompt:replace"),
         InlineKeyboardButton(text="🧹 Очистить", callback_data="prompt:clear"),
-        InlineKeyboardButton(text=f"🦝 ArtRaccoon vibe: {'ON' if vibe_enabled and vibe_available else 'OFF'}", callback_data="prompt:ar_vibe"),
     ]
     if pro and not compact:
         buttons.extend([
@@ -71,13 +70,12 @@ def pending_prompt_menu(has_image: bool = False, pro: bool = False, compact: boo
             InlineKeyboardButton(text="✨ Улучшить промт", callback_data="tool:improve"),
             InlineKeyboardButton(text="🧹 Почистить", callback_data="tool:clean"),
             InlineKeyboardButton(text="📝 Показать исходник", callback_data="prompt:show_original"),
-            InlineKeyboardButton(text="🦝 ArtRaccoon vibe", callback_data="tool:raccoon"),
             InlineKeyboardButton(text="🦝 Добавить Аэлиту", callback_data="tool:aelita"),
             InlineKeyboardButton(text="📎 Img2Img" + (" ✅" if has_image else ""), callback_data="menu:img2img"),
         ])
     buttons.append(InlineKeyboardButton(text="❌ Отмена", callback_data="prompt:cancel"))
     if pro:
-        buttons.append(InlineKeyboardButton(text="⚙️ Расширенные настройки", callback_data="paid:settings"))
+        buttons.append(InlineKeyboardButton(text="⚙️ Настройки Raccoon+", callback_data="paid:settings"))
     buttons.append(main_menu_button())
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 2))
 
@@ -126,7 +124,7 @@ def settings_menu(pro: bool = True, show_pro_button: bool = True) -> InlineKeybo
     if pro:
         buttons.extend([
             InlineKeyboardButton(text="🖼 Кол-во картинок", callback_data="settings:n"),
-            InlineKeyboardButton(text="⚙ Расширенные NovelAI", callback_data="settings:advanced_nai"),
+            InlineKeyboardButton(text="⚙ NovelAI Raccoon+", callback_data="settings:advanced_nai"),
             InlineKeyboardButton(text="🧪 UC-пресет", callback_data="settings:uc"),
             InlineKeyboardButton(text="♻️ CFG rescale", callback_data="settings:cfg"),
             InlineKeyboardButton(text="🌊 Noise", callback_data="settings:noise"),
@@ -233,24 +231,11 @@ def meta_import_menu() -> InlineKeyboardMarkup:
 
 def modes_menu(furry: bool, background: bool, quality: bool, variety_plus: bool = True) -> InlineKeyboardMarkup:
     buttons = [
-        InlineKeyboardButton(text=f"🦊 Furry: {'ON' if furry else 'OFF'}", callback_data="toggle:furry"),
-        InlineKeyboardButton(text=f"🌄 Background: {'ON' if background else 'OFF'}", callback_data="toggle:background"),
-        InlineKeyboardButton(text=f"✨ Quality tags: {'ON' if quality else 'OFF'}", callback_data="toggle:quality"),
+        InlineKeyboardButton(text=f"🦊 Фурри: {'ON' if furry else 'OFF'}", callback_data="toggle:furry"),
+        InlineKeyboardButton(text=f"🌄 Фон: {'ON' if background else 'OFF'}", callback_data="toggle:background"),
+        InlineKeyboardButton(text=f"✨ Теги качества: {'ON' if quality else 'OFF'}", callback_data="toggle:quality"),
         InlineKeyboardButton(text=f"🎨 Variety+: {'ON' if variety_plus else 'OFF'}", callback_data="toggle:variety"),
         InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:settings"),
-        main_menu_button(),
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
-
-
-def artraccoon_menu() -> InlineKeyboardMarkup:
-    buttons = [
-        InlineKeyboardButton(text="📜 Базовый промт", callback_data="ar:edit:base"),
-        InlineKeyboardButton(text="🚫 Базовый негатив", callback_data="ar:edit:base_uc"),
-        InlineKeyboardButton(text="👤 Негатив персонажа", callback_data="ar:edit:char_neg"),
-        InlineKeyboardButton(text="🧪 Тест сборки", callback_data="ar:test"),
-        InlineKeyboardButton(text="⚙️ Настройки генерации", callback_data="menu:settings"),
-        InlineKeyboardButton(text="❌ Выйти из ArtRaccoon режима", callback_data="ar:exit"),
         main_menu_button(),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
@@ -286,7 +271,6 @@ def moderation_panel_menu() -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"),
         InlineKeyboardButton(text="⚙️ Дефолты обычного режима", callback_data="admin:basic_defaults"),
-        InlineKeyboardButton(text="🦝 ArtRaccoon Vibe", callback_data="admin:ar_vibe"),
         InlineKeyboardButton(text="🧪 NovelAI debug", callback_data="admin:nai_debug"),
         InlineKeyboardButton(text="👥 Character+", callback_data="char:menu"),
         InlineKeyboardButton(text="📚 Словарь", callback_data="admin:dict"),
@@ -315,16 +299,6 @@ def characters_menu(characters: list | None = None) -> InlineKeyboardMarkup:
 
 def admin_back_button() -> InlineKeyboardButton:
     return InlineKeyboardButton(text="⬅️ Назад в модерацию", callback_data="admin:menu")
-
-
-def admin_ar_vibe_menu() -> InlineKeyboardMarkup:
-    buttons = [
-        InlineKeyboardButton(text="👁 Показать вайб", callback_data="admin_ar_vibe:show"),
-        InlineKeyboardButton(text="✏️ Изменить вайб", callback_data="admin_ar_vibe:set"),
-        InlineKeyboardButton(text="🧹 Очистить вайб", callback_data="admin_ar_vibe:clear"),
-        InlineKeyboardButton(text="🏠 Назад в модерацию", callback_data="admin:menu"),
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows(buttons, 1))
 
 
 def admin_nai_debug_menu() -> InlineKeyboardMarkup:

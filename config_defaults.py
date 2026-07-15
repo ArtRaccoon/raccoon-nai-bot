@@ -145,7 +145,7 @@ class UserSettings:
     # Служебный режим для текстового UX: append или replace.
     prompt_action: str = ""
 
-    # Расширенные параметры. Можно менять через код/будущее меню.
+    # Параметры NovelAI для Raccoon+ и служебных сценариев.
     noise_schedule: str = "karras"
     smea: bool = False
     smea_dyn: bool = False
