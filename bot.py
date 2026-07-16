@@ -21,7 +21,7 @@ from config_defaults import QUICK_PRESETS, RESOLUTIONS, MODELS, SAMPLERS, UC_PRE
 from keyboards import (
     main_menu as base_main_menu, settings_menu, modes_menu, presets_menu, pending_prompt_menu,
     after_generation_menu, generation_item_menu, meta_import_menu, confirm_reset_menu, model_menu, size_menu, sampler_menu, uc_menu, noise_menu, seed_menu, samples_menu, moderation_dictionary_menu, dictionary_menu, dictionary_pending_menu, admin_panel_menu,
-    admin_nai_debug_menu, admin_site_clone_menu, registry_fields_text, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu, characters_menu, purchase_menu, ink_packages_menu, limit_exhausted_menu, quick_steps_menu, orientation_menu,
+    admin_nai_debug_menu, admin_site_clone_menu, registry_fields_text, admin_purchases_menu, admin_users_menu, admin_broadcast_menu, admin_broadcast_confirm_menu, characters_menu, purchase_menu, ink_packages_menu, limit_exhausted_menu, quick_steps_menu, orientation_menu, start_menu, learning_menu, learning_lesson_menu,
 )
 from app.services.nai_client import (
     NovelAIClient, NovelAIError, sanitize_payload,
@@ -54,7 +54,7 @@ from ui.texts import (
     CANCEL_TEXT, CLEAR_TEXT, DAILY_LIMIT_TEXT, EDIT_PROMPT_TEXT, GENERATION_STARTED_TEXT,
     PAID_PLACEHOLDER_TEXT, PROMPT_EMPTY_TEXT, cooldown_text, generation_result_caption,
     howto_text as branded_howto_text, main_menu_text, nai_payload_summary_text,
-    presets_text, prompt_preview_text, prompt_request_text, start_text,
+    presets_text, prompt_preview_text, prompt_request_text, start_text, learning_text,
 )
 
 load_dotenv()
@@ -69,6 +69,7 @@ SUPPORT_GROUP_ID = int(SUPPORT_GROUP_ID_RAW) if SUPPORT_GROUP_ID_RAW.lstrip("-")
 SUPPORT_URL = os.getenv("SUPPORT_URL", "").strip()
 MODERATION_CHANNEL_ID_RAW = os.getenv("MODERATION_CHANNEL_ID", "").strip()
 MODERATION_CHANNEL_ID = int(MODERATION_CHANNEL_ID_RAW) if MODERATION_CHANNEL_ID_RAW.lstrip("-").isdigit() else None
+WELCOME_IMAGE_FILE_ID = os.getenv("WELCOME_IMAGE_FILE_ID", "").strip()
 
 ADMIN_IDS = [
     int(x.strip())
@@ -725,14 +726,23 @@ async def retry_last_prompt(message: types.Message, actor: types.User | None = N
         return
     await generate_image_from_prompt(message, s.last_prompt, actor=user)
 
+async def send_welcome_screen(message: types.Message) -> None:
+    text = start_text()
+    if WELCOME_IMAGE_FILE_ID:
+        await message.answer_photo(
+            WELCOME_IMAGE_FILE_ID,
+            caption=text,
+            reply_markup=start_menu(),
+            parse_mode="HTML",
+        )
+        return
+    await message.answer(text, reply_markup=start_menu(), parse_mode="HTML")
+
+
 @dp.message(Command("start"))
 async def start(message: types.Message):
     get_settings(message.from_user.id)
-    await message.answer(
-        start_text(free_remaining_today(message.from_user.id), DAILY_GENERATION_LIMIT, has_moderation_access(message.from_user.id)),
-        reply_markup=main_menu(),
-        parse_mode="HTML",
-    )
+    await send_welcome_screen(message)
 
 @dp.message(Command("help", "howto"))
 async def help_cmd(message: types.Message):
@@ -2080,13 +2090,48 @@ async def admin_broadcast_text(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Черновик сохранён.\nОценка получателей: <code>{_users_count()}</code>", parse_mode="HTML", reply_markup=admin_broadcast_menu(True))
 
 
+
+@dp.callback_query(F.data == "learning:open")
+async def cb_learning_open(call: types.CallbackQuery):
+    if getattr(call.message, "photo", None):
+        await call.message.delete()
+        await call.message.answer(learning_text("open"), reply_markup=learning_menu(), parse_mode="HTML")
+    else:
+        await call.message.edit_text(learning_text("open"), reply_markup=learning_menu(), parse_mode="HTML")
+    await call.answer()
+
+
+@dp.callback_query(F.data.in_({"learning:first_steps", "learning:prompts", "learning:character", "learning:style", "learning:mistakes", "learning:examples"}))
+async def cb_learning_lesson(call: types.CallbackQuery):
+    section = call.data.split(":", 1)[1]
+    await call.message.edit_text(learning_text(section), reply_markup=learning_lesson_menu(), parse_mode="HTML")
+    await call.answer()
+
+
+@dp.callback_query(F.data == "learning:back")
+async def cb_learning_back(call: types.CallbackQuery):
+    if WELCOME_IMAGE_FILE_ID:
+        await call.message.delete()
+        await send_welcome_screen(call.message)
+    else:
+        await call.message.edit_text(start_text(), reply_markup=start_menu(), parse_mode="HTML")
+    await call.answer()
+
 @dp.callback_query(F.data == "menu:main")
 async def cb_main(call: types.CallbackQuery):
-    await call.message.edit_text(
-        main_menu_text(),
-        reply_markup=main_menu_for(call.from_user.id),
-        parse_mode="HTML",
-    )
+    if getattr(call.message, "photo", None):
+        await call.message.delete()
+        await call.message.answer(
+            main_menu_text(),
+            reply_markup=main_menu_for(call.from_user.id),
+            parse_mode="HTML",
+        )
+    else:
+        await call.message.edit_text(
+            main_menu_text(),
+            reply_markup=main_menu_for(call.from_user.id),
+            parse_mode="HTML",
+        )
     await call.answer()
 
 @dp.callback_query(F.data == "menu:settings")
@@ -2117,11 +2162,19 @@ async def cb_reset_confirm(call: types.CallbackQuery):
 @dp.callback_query(F.data == "menu:gen")
 async def cb_gen(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(GenState.waiting_prompt)
-    await call.message.edit_text(
-        prompt_request_text(),
-        reply_markup=main_menu(),
-        parse_mode="HTML",
-    )
+    if getattr(call.message, "photo", None):
+        await call.message.delete()
+        await call.message.answer(
+            prompt_request_text(),
+            reply_markup=main_menu(),
+            parse_mode="HTML",
+        )
+    else:
+        await call.message.edit_text(
+            prompt_request_text(),
+            reply_markup=main_menu(),
+            parse_mode="HTML",
+        )
     await call.answer()
 
 @dp.callback_query(F.data.in_({"menu:help", "menu:howto"}))

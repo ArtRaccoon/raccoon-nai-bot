@@ -18,14 +18,74 @@ def cooldown_text(seconds: int) -> str:
     return f"⏳ Дай еноту пару секунд отдышаться.\nОсталось: {seconds}s"
 
 
-def start_text(remaining: int | None, daily_limit: int, is_admin: bool = False) -> str:
-    remaining_line = f"\n\nСегодня осталось: <b>{remaining}/{daily_limit}</b>." if remaining is not None else ""
+def start_text(remaining: int | None = None, daily_limit: int = 0, is_admin: bool = False) -> str:
     return (
-        "🦝 <b>RaccoonNAI</b>\n\n"
-        "Привет! Я помогу превратить идею в картинку.\n"
-        "Напиши промпт — покажу черновик перед генерацией."
-        + remaining_line
+        "🦝 <b>Добро пожаловать в Raccoon NAI!</b>\n\n"
+        "Создавайте изображения с помощью NovelAI.\n\n"
+        "✍️ <b>Опишите желаемое изображение только на английском языке.</b>\n\n"
+        "Например:\n\n"
+        "<blockquote expandable>1girl, raccoon ears, fluffy striped tail, long messy black hair, "
+        "glowing pink eyes with vertical pupils, pale skin, oversized black hoodie with violet accents, "
+        "fingerless gloves, constellation tattoo on arm, ancient magical library, glowing books, "
+        "floating runes, warm candlelight, cinematic lighting, masterpiece, best quality, highly detailed</blockquote>\n\n"
+        "Не знаете, как писать промпты? Загляните в <b>📖 Обучение</b>. "
+        "Там собраны основы промптинга, полезные теги и готовые примеры для NovelAI."
     )
+
+
+def learning_text(section: str = "open") -> str:
+    texts = {
+        "open": "📖 <b>Обучение Raccoon NAI</b>\n\nВыберите раздел:",
+        "first_steps": (
+            "🌱 <b>Первые шаги</b>\n\n"
+            "1. Опишите изображение на английском языке.\n"
+            "2. Разделяйте теги запятыми.\n"
+            "3. Сначала укажите персонажа, затем внешность, одежду, позу, фон, свет и стиль.\n"
+            "4. Не делайте первый промпт слишком длинным.\n"
+            "5. После генерации постепенно добавляйте или убирайте детали.\n\n"
+            "Example:\n\n"
+            "<blockquote>1girl, raccoon ears, black hair, pink eyes, dark hoodie, night city, cinematic lighting</blockquote>"
+        ),
+        "prompts": (
+            "✍️ <b>Как писать промпты</b>\n\n"
+            "Удобная структура:\n\n"
+            "<blockquote>персонаж, внешность, одежда, поза, окружение, освещение, стиль, качество</blockquote>\n\n"
+            "Example:\n\n"
+            "<blockquote>1girl, raccoon ears, long black hair, glowing pink eyes, oversized hoodie, standing in an ancient library, warm candlelight, cinematic lighting, highly detailed</blockquote>\n\n"
+            "• более важные теги обычно лучше ставить раньше\n"
+            "• теги разделяются запятыми\n"
+            "• избегайте противоречивых описаний"
+        ),
+        "character": (
+            "👤 <b>Описание персонажа</b>\n\n"
+            "Полезный порядок:\n\n"
+            "- количество персонажей\n- пол и возрастная категория\n- волосы\n- глаза\n- особенности\n- одежда\n- эмоция\n- поза\n\n"
+            "Example:\n\n"
+            "<blockquote>1girl, adult, raccoon ears, fluffy striped tail, long messy black hair, glowing pink eyes, pale skin, black oversized hoodie, gentle mysterious expression</blockquote>"
+        ),
+        "style": (
+            "🎨 <b>Стиль и атмосфера</b>\n\n"
+            "Добавляйте:\n\n- место\n- время суток\n- источник света\n- настроение\n- художественную подачу\n\n"
+            "Examples:\n\n"
+            "<blockquote>ancient library, floating runes, warm candlelight, magical atmosphere</blockquote>\n\n"
+            "<blockquote>neon city at night, rain, reflections, cinematic lighting, moody atmosphere</blockquote>"
+        ),
+        "mistakes": (
+            "🚫 <b>Частые ошибки</b>\n\n"
+            "- промпт написан на русском\n- слишком много противоречивых тегов\n- одновременно указаны разные цвета волос или глаз\n"
+            "- смешаны несовместимые стили\n- важная деталь спрятана в самом конце длинного промпта\n"
+            "- промпт состоит только из слов “masterpiece, best quality”\n\n"
+            "Качество промпта определяет результат сильнее, чем количество красивых слов."
+        ),
+        "examples": (
+            "🦝 <b>Готовые примеры</b>\n\n"
+            "1. Aelita in library\n<blockquote expandable>1girl, raccoon ears, fluffy striped tail, long messy black hair, glowing pink eyes with vertical pupils, pale skin, oversized black hoodie with violet accents, fingerless gloves, constellation tattoo on arm, ancient magical library, glowing books, floating runes, warm candlelight, cinematic lighting, masterpiece, best quality, highly detailed</blockquote>\n\n"
+            "2. Neon city\n<blockquote expandable>1girl, raccoon ears, long black hair, pink eyes, black streetwear, standing in a neon city at night, rain, glowing signs, wet asphalt reflections, cinematic composition, detailed anime illustration</blockquote>\n\n"
+            "3. Cozy workshop\n<blockquote expandable>1girl, raccoon ears, fluffy striped tail, messy black hair, oversized hoodie, sitting in a cozy fantasy workshop, sketches, crystals, old books, warm lamp light, atmospheric, highly detailed</blockquote>\n\n"
+            "4. Cosmic ruins\n<blockquote expandable>1girl, raccoon ears, glowing pink eyes, black cloak, standing among ancient cosmic ruins, floating stones, stars, purple nebula, mysterious atmosphere, cinematic lighting, detailed anime art</blockquote>"
+        ),
+    }
+    return texts.get(section, texts["open"])
 
 
 def howto_text(remaining: int | None = None, daily_limit: int = 10) -> str:

@@ -376,3 +376,30 @@ def registry_fields_text(admin: bool = False) -> str:
 # Compatibility wrapper for older imports/calls.
 def admin_panel_menu() -> InlineKeyboardMarkup:
     return moderation_panel_menu()
+
+def start_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 Открыть обучение", callback_data="learning:open")],
+        [InlineKeyboardButton(text="🎨 Создать изображение", callback_data="menu:gen")],
+        [InlineKeyboardButton(text="☰ Главное меню", callback_data="menu:main")],
+    ])
+
+
+def learning_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌱 Первые шаги", callback_data="learning:first_steps")],
+        [InlineKeyboardButton(text="✍️ Как писать промпты", callback_data="learning:prompts")],
+        [InlineKeyboardButton(text="👤 Персонаж", callback_data="learning:character")],
+        [InlineKeyboardButton(text="🎨 Стиль и атмосфера", callback_data="learning:style")],
+        [InlineKeyboardButton(text="🚫 Частые ошибки", callback_data="learning:mistakes")],
+        [InlineKeyboardButton(text="🦝 Готовые примеры", callback_data="learning:examples")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="learning:back")],
+    ])
+
+
+def learning_lesson_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ К разделам", callback_data="learning:open")],
+        [InlineKeyboardButton(text="🎨 Создать изображение", callback_data="menu:gen")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main")],
+    ])
